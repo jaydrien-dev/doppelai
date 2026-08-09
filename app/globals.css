@@ -1,0 +1,197 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Expose the tokens to Tailwind's utility generator so components can say
+   `bg-surface` / `text-slate` instead of re-deriving anything. */
+@theme inline {
+  --color-bg-base: var(--bg-base);
+  --color-surface: var(--surface);
+  --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
+  --color-ink: var(--ink);
+  --color-slate: var(--slate);
+
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+
+  --text-micro: var(--text-micro);
+  --text-sm: var(--text-sm);
+  --text-body: var(--text-body);
+  --text-title: var(--text-title);
+  --text-display: var(--text-display);
+
+  --radius-card: var(--radius-card);
+  --radius-card-sm: var(--radius-card-sm);
+  --radius-control: var(--radius-control);
+  --radius-pill: var(--radius-pill);
+}
+
+/* ---------------------------------------------------------------------------
+   Base
+   --------------------------------------------------------------------------- */
+
+html {
+  background: var(--bg-base);
+}
+
+/* The overlay is a transparent, frameless window. Its surrounding pixels have
+   to be genuinely see-through, or it renders as a grey square on the desktop.
+   The class is set by app/overlay/page.tsx on mount. */
+html.overlay,
+html.overlay body {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--ink);
+  font-family: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+::selection {
+  background: var(--primary-soft);
+  color: var(--ink);
+}
+
+/* Focus rings are the one permitted outline — accessibility beats the
+   no-borders rule, but keep it soft and blue rather than a hard ring. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+/* Scrollbars, kept out of the way. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--shadow-dark) transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Neumorphic primitives — the only place elevation is defined.
+   --------------------------------------------------------------------------- */
+
+.raised {
+  background: var(--surface);
+  box-shadow: var(--elev-raised);
+  border-radius: var(--radius-card);
+}
+
+.raised-sm {
+  background: var(--surface);
+  box-shadow: var(--elev-raised-sm);
+  border-radius: var(--radius-control);
+}
+
+.raised-lg {
+  background: var(--surface);
+  box-shadow: var(--elev-raised-lg);
+  border-radius: var(--radius-card);
+}
+
+.pressed {
+  background: var(--bg-base);
+  box-shadow: var(--elev-pressed);
+  border-radius: var(--radius-card);
+}
+
+.pressed-sm {
+  background: var(--bg-base);
+  box-shadow: var(--elev-pressed-sm);
+  border-radius: var(--radius-control);
+}
+
+/* Flattest treatment — trusted routines, which have earned their calm. */
+.flat {
+  background: var(--surface);
+  box-shadow: none;
+  border-radius: var(--radius-card);
+}
+
+/* Anything interactive presses in on click. */
+.pressable {
+  transition:
+    box-shadow var(--dur-press) var(--ease-calm),
+    transform var(--dur-press) var(--ease-calm);
+}
+
+.pressable:active {
+  box-shadow: var(--elev-pressed-sm);
+  transform: translateY(1px);
+}
+
+.pressable:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Typography helpers
+   --------------------------------------------------------------------------- */
+
+.micro-label {
+  font-size: var(--text-micro);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--slate);
+}
+
+.agent-voice {
+  color: var(--ink);
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+/* ---------------------------------------------------------------------------
+   Motion
+   --------------------------------------------------------------------------- */
+
+@keyframes mimic-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes mimic-ring {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.7);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

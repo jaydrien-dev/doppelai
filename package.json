@@ -1,0 +1,67 @@
+{
+  "name": "mimic",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A personal trusted execution engine that learns tasks by watching.",
+  "author": "Mimic",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n next,electron -c blue,magenta \"npm:dev:next\" \"npm:dev:electron\"",
+    "dev:next": "next dev",
+    "dev:electron": "wait-on tcp:127.0.0.1:3000 && cross-env ELECTRON_DEV=1 node scripts/start-electron.js",
+    "dev:web": "next dev",
+    "build": "next build",
+    "app": "node scripts/start-electron.js",
+    "server": "node server/index.js",
+    "test": "node scripts/selftest.js && node scripts/identitytest.js",
+    "test:core": "node scripts/selftest.js",
+    "test:identity": "node scripts/identitytest.js",
+    "start": "npm run build && node scripts/start-electron.js",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "com.mimic.app",
+    "productName": "Mimic",
+    "files": [
+      "electron/**/*",
+      "out/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Utility"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@huggingface/transformers": "^4.2.0",
+    "framer-motion": "^13.0.0",
+    "next": "^16.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "concurrently": "^10.0.4",
+    "cross-env": "^10.1.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "wait-on": "^9.1.0"
+  }
+}

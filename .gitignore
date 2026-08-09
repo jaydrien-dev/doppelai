@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+.next/
+out/
+release/
+*.tsbuildinfo
+next-env.d.ts
+
+# The embedding model cache. Downloaded on demand at runtime into the app's
+# own data folder; this copy only appears if a script is pointed here.
+.cache-embed/
+
+# Local identity server data — accounts, devices, sessions. Never committed.
+.mimic-identity/
+server/data/
+
+# Anything holding a key or captured state. The real ones live in the OS
+# application-data folder, but keep the door shut anyway.
+.env
+.env.*
+*.local
+mimic-state.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

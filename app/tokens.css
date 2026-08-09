@@ -1,0 +1,56 @@
+/* ===========================================================================
+   Mimic — design tokens.
+   This is the ONLY file in the app allowed to contain literal colour values.
+   Everything else references var(--…) or a Tailwind utility mapped from these.
+   =========================================================================== */
+
+:root {
+  /* --- Colour ------------------------------------------------------------ */
+  --bg-base: #f0f3f8;
+  --surface: #ffffff;
+  --primary: #2563eb;
+  --primary-soft: #dbeaff;
+  --ink: #0f172a;
+  --slate: #64748b;
+
+  --shadow-dark: rgba(163, 177, 198, 0.28);
+  --shadow-light: rgba(255, 255, 255, 0.9);
+
+  /* Derived, still literal-free downstream. */
+  --primary-glow: rgba(37, 99, 235, 0.28);
+  --primary-glow-soft: rgba(37, 99, 235, 0.1);
+  --ink-soft: rgba(15, 23, 42, 0.06);
+  --slate-glow: rgba(100, 116, 139, 0.22);
+  --scrim: rgba(15, 23, 42, 0.28);
+
+  /* --- Type scale (5 sizes) ---------------------------------------------- */
+  --text-micro: 0.6875rem; /* 11px — uppercase metadata */
+  --text-sm: 0.8125rem; /* 13px — secondary */
+  --text-body: 0.9375rem; /* 15px — body */
+  --text-title: 1.25rem; /* 20px — card / section titles */
+  --text-display: 2rem; /* 32px — page headings, agent voice */
+
+  --tracking-tight: -0.02em;
+  --tracking-wide: 0.08em;
+  --leading-body: 1.6;
+
+  /* --- Radii -------------------------------------------------------------- */
+  --radius-card: 22px;
+  --radius-card-sm: 16px;
+  --radius-control: 12px;
+  --radius-pill: 999px;
+
+  /* --- Elevation (the neumorphic pair, defined once) ---------------------- */
+  --elev-raised: -6px -6px 14px var(--shadow-light), 6px 6px 14px var(--shadow-dark);
+  --elev-raised-sm: -3px -3px 7px var(--shadow-light), 3px 3px 7px var(--shadow-dark);
+  --elev-raised-lg: -10px -10px 24px var(--shadow-light), 10px 10px 24px var(--shadow-dark);
+  --elev-pressed: inset -4px -4px 10px var(--shadow-light), inset 4px 4px 10px var(--shadow-dark);
+  --elev-pressed-sm: inset -2px -2px 5px var(--shadow-light), inset 2px 2px 5px var(--shadow-dark);
+
+  /* --- Motion ------------------------------------------------------------- */
+  --ease-calm: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-press: 140ms;
+  --dur-fade: 320ms;
+  --dur-slow: 700ms;
+  --pulse-cycle: 4s;
+}
