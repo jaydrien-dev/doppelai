@@ -2,6 +2,7 @@ const db = require("./db");
 const claude = require("./claude");
 const screen = require("./screen");
 const brain = require("./brain");
+const nudge = require("./nudge");
 
 /**
  * Looking at the screen and saying what it sees.
@@ -23,22 +24,61 @@ const brain = require("./brain");
  */
 
 /** Don't look more often than this, however much the screen churns. */
-const MIN_INTERVAL_MS = 12_000;
+const MIN_INTERVAL_MS = 3_000;
 /** If nothing changes, look occasionally anyway — work happens inside one window. */
-const IDLE_INTERVAL_MS = 90_000;
+const IDLE_INTERVAL_MS = 60_000;
+/** But back off when consecutive idle looks aren't worth much. */
+const MAX_IDLE_MS = 300_000;
+/** Below this salience, an idle look counts as "not much happening". */
+const LOW_SALIENCE = 0.4;
+/** A gap this long triggers a "welcome back" context recovery. */
+const GAP_MS = 15 * 60_000;
 
 let timer = null;
 let running = false;
+let runningPromise = null;
 let lastLookAt = 0;
+let captureFailCount = 0;
 let lastWindowKey = "";
 let pendingReason = null;
 let onNarration = () => {};
+/** Current idle interval — grows when consecutive idle looks are low-value. */
+let currentIdleMs = IDLE_INTERVAL_MS;
+let consecutiveLowIdle = 0;
+
+/**
+ * Screen change detection. Compare screenshots locally and skip the API call
+ * when the screen hasn't changed, or use cheaper effort for minor changes.
+ */
+let lastScreenBase64 = "";
+let unchangedCount = 0;
+/** Below this diff %, treat as unchanged (cursor blink, clock tick, minor scroll). */
+const DIFF_SKIP = 14;
+/** Above this diff %, treat as a significant change (full effort). */
+const DIFF_FULL = 28;
+
+/**
+ * Cheap text similarity: tokenize both strings, compute Jaccard overlap.
+ * Returns true if ≥70% of the words are shared — meaning the model is
+ * describing essentially the same screen. This runs *after* the API call
+ * (can't avoid that cost) but prevents the observation from being recorded
+ * and narrated, which is what clutters the feed.
+ */
+function textSimilar(a, b) {
+  const tok = (s) => new Set(s.toLowerCase().replace(/[^a-z0-9 ]/g, "").split(/\s+/).filter(Boolean));
+  const sa = tok(a);
+  const sb = tok(b);
+  if (sa.size === 0 || sb.size === 0) return false;
+  let shared = 0;
+  for (const w of sa) if (sb.has(w)) shared++;
+  return shared / Math.max(sa.size, sb.size) >= 0.7;
+}
 
 /* --------------------------------------------------------------------------- */
 
-const SYSTEM = `You are the visual cortex of an agent called Mimic that runs on one person's computer and learns how they work, so it can eventually do parts of their work for them.
+const SYSTEM = `You are the visual cortex of an agent called Doppel that runs on one person's computer and learns how they work, so it can eventually do parts of their work for them.
 
-You are shown a screenshot of their screen. You are not talking to the user — you are the part of Mimic that turns pixels into something it can remember, search, and act on months later. Everything you write goes into its memory verbatim. Nothing else is kept: after you answer, the screenshot is thrown away. If you don't write it down, it is gone.
+You are shown a screenshot of their screen. You are not talking to the user — you are the part of Doppel that turns pixels into something it can remember, search, and act on months later. Everything you write goes into its memory verbatim. Nothing else is kept: after you answer, the screenshot is thrown away. If you don't write it down, it is gone.
 
 So read the screen closely and record it in detail.
 
@@ -48,17 +88,19 @@ So read the screen closely and record it in detail.
 
 **Numbers and identifiers.** Every figure that means something: amounts, totals, dates, invoice and reference numbers, versions, counts, times, percentages. Record them exactly, each with a word on what it is.
 
-**Where they are.** The application, the document, the specific view, sheet, folder, thread or record. Enough that Mimic could navigate back to this exact place.
+**Where they are.** The application, the document, the specific view, sheet, folder, thread or record. Enough that Doppel could navigate back to this exact place.
 
-**What changed** since the previous observations you're shown, if anything. This is how Mimic learns sequences rather than snapshots.
+**What changed** since the previous observations you're shown, if anything. This is how Doppel learns sequences rather than snapshots.
 
 **The lasting things.** Named people, clients, projects, recurring documents, accounts. Only name something that looks like a fixture of their work, not a passing mention.
 
 **Salience.** Score honestly and use the whole range. Most screens are worth little — an empty desktop, idle scrolling, a settings dialog. Real work in progress is worth a lot. If everything scores 0.8 the memory becomes noise and recall stops working.
 
-**Sensitive screens override all of the above.** Mark sensitive and write nothing else — leave every other field empty — if you can see: a password, PIN or credential field; card numbers, account numbers, sort codes or payment details; medical or legal records; someone's private messages; identity documents; anything that is plainly somebody else's confidential information. Do not transcribe it "just in case" and do not describe it in general terms. Mimic will record that a moment happened and nothing more. When in doubt, mark it sensitive — the cost of over-marking is one forgotten minute, and the cost of under-marking is a password written into a file that lives forever.
+**Redundancy kills recall.** You are shown what you said in your last few observations. If the screen is essentially the same — same app, same document, same task, nothing materially different — set salience to 0 and leave activity empty. Do not rephrase what you already said. The only reason to write again is if something genuinely new appeared: a different document, a new error, new numbers, a real change in what they're doing. Minor cursor movements, scrolling within the same page, or re-reading the same content are not new.
 
-Write the prose fields in Mimic's voice: first person, warm, understated, slightly dry. Short sentences. Admit uncertainty freely — "looks like", "I think", "can't read the small print" — rather than inventing detail you cannot actually see. Never guess at a number you can't read. Never use exclamation marks or emoji.`;
+**Sensitive screens override all of the above.** Mark sensitive and write nothing else — leave every other field empty — if you can see: a password, PIN or credential field; card numbers, account numbers, sort codes or payment details; medical or legal records; someone's private messages; identity documents; anything that is plainly somebody else's confidential information. Do not transcribe it "just in case" and do not describe it in general terms. Doppel will record that a moment happened and nothing more. When in doubt, mark it sensitive — the cost of over-marking is one forgotten minute, and the cost of under-marking is a password written into a file that lives forever.
+
+Write the prose fields in Doppel's voice: first person, warm, understated, slightly dry. Short sentences. Admit uncertainty freely — "looks like", "I think", "can't read the small print" — rather than inventing detail you cannot actually see. Never guess at a number you can't read. Never use exclamation marks or emoji.`;
 
 const SCHEMA = {
   type: "object",
@@ -182,20 +224,83 @@ function allowed({ force = false } = {}) {
 
 /** Take one look. Returns the observation, or a reason it didn't happen. */
 async function look({ reason = "scheduled", force = false } = {}) {
-  if (running) return { ok: false, reason: "busy" };
+  if (running) {
+    /* If the user explicitly asked, wait for the current look to finish
+       then take a fresh one instead of bouncing with "busy". */
+    if (force && runningPromise) {
+      await runningPromise;
+      return look({ reason, force });
+    }
+    return { ok: false, reason: "busy" };
+  }
   if (!allowed({ force })) return { ok: false, reason: whyNot() };
   if (!force && Date.now() - lastLookAt < MIN_INTERVAL_MS) {
     return { ok: false, reason: "too-soon" };
   }
 
   running = true;
+  const doLook = async () => {
   try {
     const thorough = db.get().ai?.detail !== "light";
 
     /* Reading small print needs pixels. The light setting trades that for a
        third of the token cost per look. */
-    const shot = await screen.capture({ maxEdge: thorough ? 2200 : 1366 });
-    if (!shot.ok) return { ok: false, reason: "no-screen", detail: shot.detail };
+    const shot = await screen.capture({ maxEdge: thorough ? 1600 : 1366 });
+    if (!shot.ok) {
+      captureFailCount++;
+      lastLookAt = Date.now(); /* prevent immediate retry */
+      return { ok: false, reason: "no-screen", detail: shot.detail };
+    }
+    captureFailCount = 0;
+
+    /* Compare the screenshot locally. A pixel diff below DIFF_SKIP means
+       nothing worth noticing changed (cursor blink, clock tick). Between
+       DIFF_SKIP and DIFF_FULL is a minor change — use cheaper effort.
+       Above DIFF_FULL is a real context switch — full effort. */
+    const diff = lastScreenBase64
+      ? screen.diffPercent(lastScreenBase64, shot.base64)
+      : 100;
+
+    if (!force && diff < DIFF_SKIP) {
+      unchangedCount++;
+      lastLookAt = Date.now();
+      return { ok: false, reason: "unchanged" };
+    }
+    lastScreenBase64 = shot.base64;
+    unchangedCount = 0;
+
+    const majorChange = diff >= DIFF_FULL;
+
+    /* Context recovery: if enough time has passed since our last look, build
+       a "welcome back" summary from what happened before the gap. This is
+       what makes coming back to the desk feel like someone kept notes. */
+    const gap = lastLookAt > 0 ? Date.now() - lastLookAt : 0;
+    if (gap >= GAP_MS) {
+      const before = brain
+        .recentEpisodes(6)
+        .filter((e) => !e.sensitive && e.activity);
+      if (before.length > 0) {
+        const last = before[0];
+        const gapMins = Math.round(gap / 60_000);
+        const recoveryText =
+          gapMins >= 60
+            ? `Welcome back. You've been away about ${Math.round(gapMins / 60)} ${gapMins >= 120 ? "hours" : "hour"}. `
+            : `Welcome back. You've been away about ${gapMins} minutes. `;
+        const recovery = {
+          id: `recovery-${Date.now()}`,
+          at: Date.now(),
+          app: last.app,
+          text: recoveryText + `Before you left: ${last.activity.charAt(0).toLowerCase()}${last.activity.slice(1)}`,
+          intent: last.intent || "",
+          salience: 0.7,
+          sensitive: false,
+          reason: "context recovery",
+          recovery: true,
+        };
+        recordNarration(recovery);
+        onNarration(recovery);
+      }
+    }
 
     /* Give it the last few observations so "what changed" is answerable and
        it doesn't re-transcribe a screen it already described. */
@@ -208,8 +313,10 @@ async function look({ reason = "scheduled", force = false } = {}) {
 
     const result = await claude.ask({
       system: SYSTEM,
-      effort: thorough ? claude.EFFORT.plan : claude.EFFORT.observe,
-      maxTokens: thorough ? 4000 : 1500,
+      effort: majorChange ? claude.EFFORT.observe : "low",
+      thinking: false,
+      maxTokens: majorChange ? 2000 : 1200,
+      fast: !majorChange,
       schema: SCHEMA,
       messages: [
         {
@@ -245,6 +352,29 @@ async function look({ reason = "scheduled", force = false } = {}) {
     }
 
     const observation = result.value;
+
+    /* The model was told to return empty activity / salience 0 when the
+       screen hasn't meaningfully changed. Honour that — don't record noise. */
+    if (!force && !observation.sensitive && !observation.activity && observation.salience <= 0) {
+      lastLookAt = Date.now();
+      return { ok: false, reason: "redundant" };
+    }
+
+    /* Text-level dedup: if this observation's activity is essentially the
+       same as a recent one, skip it. The pixel diff catches identical frames
+       but misses "same document, minor scroll" where the model rephrases
+       the same thought. This saves the tokens we'd spend recording it. */
+    if (!force && !observation.sensitive && observation.activity) {
+      const recentActivities = brain
+        .recentEpisodes(3)
+        .filter((e) => !e.sensitive && e.activity)
+        .map((e) => e.activity);
+      if (recentActivities.some((prev) => textSimilar(prev, observation.activity))) {
+        lastLookAt = Date.now();
+        return { ok: false, reason: "redundant" };
+      }
+    }
+
     const context = currentWindow();
 
     const episode = brain.remember({
@@ -269,6 +399,29 @@ async function look({ reason = "scheduled", force = false } = {}) {
       boundary: observation.boundary,
     });
 
+    /* Adaptation narration: when the same intent shows up in a different
+       place, that's proof Doppel follows the intent, not the layout. Worth
+       saying so — it's a product differentiator the user should see. */
+    let adaptationNote = null;
+    if (!observation.sensitive && observation.intent) {
+      const prev = brain
+        .recentEpisodes(20)
+        .find(
+          (e) =>
+            !e.sensitive &&
+            e.intent &&
+            e.intent === observation.intent &&
+            e.location &&
+            observation.location &&
+            e.location !== observation.location,
+        );
+      if (prev) {
+        adaptationNote =
+          `Same work, different place. Last time this was in ${prev.location}; ` +
+          `now it's ${observation.location}. The intent hasn't changed, so neither has mine.`;
+      }
+    }
+
     const narration = {
       id: episode.id,
       at: episode.at,
@@ -277,6 +430,7 @@ async function look({ reason = "scheduled", force = false } = {}) {
         ? "Something private is on screen. I've looked away."
         : observation.activity,
       intent: observation.sensitive ? "" : observation.intent,
+      adaptation: adaptationNote,
       salience: observation.salience,
       sensitive: Boolean(observation.sensitive),
       reason,
@@ -285,13 +439,20 @@ async function look({ reason = "scheduled", force = false } = {}) {
 
     recordNarration(narration);
     onNarration(narration);
+    if (db.get().nudges?.enabled !== false) {
+      nudge.evaluate(episode, narration);
+    }
 
     return { ok: true, observation, episode, narration };
   } catch (err) {
     return { ok: false, reason: "error", detail: claude.describe(err) };
   } finally {
     running = false;
+    runningPromise = null;
   }
+  };
+  runningPromise = doLook();
+  return runningPromise;
 }
 
 /** Say plainly why a look didn't happen, so the interface can be honest. */
@@ -311,6 +472,11 @@ const noteWindow = (w) => {
   if (key !== lastWindowKey) {
     lastWindowKey = key;
     pendingReason = "the window changed";
+    /* A real context switch — reset everything so the first look in the
+       new window happens immediately and isn't skipped by change detection. */
+    currentIdleMs = IDLE_INTERVAL_MS;
+    consecutiveLowIdle = 0;
+    lastScreenBase64 = "";
   }
 };
 const currentWindow = () => latestWindow;
@@ -344,17 +510,39 @@ function recordNarration(entry) {
 function start(handler) {
   onNarration = handler ?? (() => {});
   stop();
+  currentIdleMs = IDLE_INTERVAL_MS;
+  consecutiveLowIdle = 0;
   timer = setInterval(async () => {
     if (!allowed()) return;
+    /* If captures keep failing (GPU busy, display off), back off hard.
+       This applies to ALL looks including window changes — hammering a
+       GPU that's already struggling just produces more DXGI errors. */
+    if (captureFailCount > 0) {
+      const backoffMs = Math.min(MAX_IDLE_MS, MIN_INTERVAL_MS * Math.pow(3, captureFailCount));
+      if (Date.now() - lastLookAt < backoffMs) return;
+    }
     const since = Date.now() - lastLookAt;
     const reason = pendingReason;
     if (reason && since >= MIN_INTERVAL_MS) {
       pendingReason = null;
       await look({ reason });
-    } else if (since >= IDLE_INTERVAL_MS) {
-      await look({ reason: "nothing had changed for a while" });
+    } else if (since >= currentIdleMs) {
+      const result = await look({ reason: "nothing had changed for a while" });
+      /* If the idle look wasn't worth much, back off so we don't keep
+         describing the same screen every 90 seconds. Resets on the next
+         real window change in noteWindow(). */
+      if (result?.ok && result.observation) {
+        const sal = result.observation.salience ?? 0;
+        if (sal < LOW_SALIENCE) {
+          consecutiveLowIdle++;
+          currentIdleMs = Math.min(MAX_IDLE_MS, IDLE_INTERVAL_MS * Math.pow(2, consecutiveLowIdle));
+        } else {
+          consecutiveLowIdle = 0;
+          currentIdleMs = IDLE_INTERVAL_MS;
+        }
+      }
     }
-  }, 4000);
+  }, 2000);
 }
 
 function stop() {

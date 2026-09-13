@@ -1,5 +1,5 @@
 # Executes one batch of input actions and reports what happened.
-# Short-lived: Mimic spawns this per step, passing a JSON file of actions.
+# Short-lived: Doppel spawns this per step, passing a JSON file of actions.
 #
 #   [{ "kind": "activate", "match": "Excel" },
 #    { "kind": "hotkey",   "keys": "^s" },
@@ -21,7 +21,7 @@ using System.Text;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
-public class MimicAct {
+public class DoppelAct {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -77,7 +77,7 @@ function Escape-SendKeys([string]$text) {
 }
 
 function Move-To([int]$x, [int]$y) {
-  [void][MimicAct]::SetCursorPos($x, $y)
+  [void][DoppelAct]::SetCursorPos($x, $y)
   Start-Sleep -Milliseconds 40
 }
 
@@ -94,12 +94,26 @@ foreach ($action in $actions) {
 
       'activate' {
         $needle = [string]$action.match
-        $target = [MimicAct]::Windows() |
+        # Try matching by window title first, then by process name.
+        $target = [DoppelAct]::Windows() |
           Where-Object { $_.Title -like "*$needle*" } |
           Select-Object -First 1
+        if (-not $target) {
+          # Fall back to matching by process name (e.g. "chrome", "excel").
+          $procs = Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessName -like "*$needle*" -and $_.MainWindowHandle -ne [IntPtr]::Zero } |
+            Select-Object -First 1
+          if ($procs) {
+            $target = [PSCustomObject]@{
+              Handle = $procs.MainWindowHandle
+              Title  = $procs.MainWindowTitle
+              ProcId = $procs.Id
+            }
+          }
+        }
         if (-not $target) { throw "No open window matching '$needle'" }
-        [void][MimicAct]::ShowWindow($target.Handle, $SW_RESTORE)
-        [void][MimicAct]::SetForegroundWindow($target.Handle)
+        [void][DoppelAct]::ShowWindow($target.Handle, $SW_RESTORE)
+        [void][DoppelAct]::SetForegroundWindow($target.Handle)
         Start-Sleep -Milliseconds 220
         $entry.detail = $target.Title
       }
@@ -120,8 +134,8 @@ foreach ($action in $actions) {
         if ($action.triple) { $times = 3 }
 
         for ($i = 0; $i -lt $times; $i++) {
-          [MimicAct]::mouse_event($down, 0, 0, 0, [IntPtr]::Zero)
-          [MimicAct]::mouse_event($up, 0, 0, 0, [IntPtr]::Zero)
+          [DoppelAct]::mouse_event($down, 0, 0, 0, [IntPtr]::Zero)
+          [DoppelAct]::mouse_event($up, 0, 0, 0, [IntPtr]::Zero)
           if ($i -lt $times - 1) { Start-Sleep -Milliseconds 60 }
         }
         $button = 'left'
@@ -131,30 +145,30 @@ foreach ($action in $actions) {
 
       'mouse-down' {
         Move-To ([int]$action.x) ([int]$action.y)
-        [MimicAct]::mouse_event($LEFT_DOWN, 0, 0, 0, [IntPtr]::Zero)
+        [DoppelAct]::mouse_event($LEFT_DOWN, 0, 0, 0, [IntPtr]::Zero)
         $entry.detail = "down at $($action.x),$($action.y)"
       }
 
       'mouse-up' {
         if ($null -ne $action.x) { Move-To ([int]$action.x) ([int]$action.y) }
-        [MimicAct]::mouse_event($LEFT_UP, 0, 0, 0, [IntPtr]::Zero)
+        [DoppelAct]::mouse_event($LEFT_UP, 0, 0, 0, [IntPtr]::Zero)
         $entry.detail = 'up'
       }
 
       'drag' {
         Move-To ([int]$action.x1) ([int]$action.y1)
-        [MimicAct]::mouse_event($LEFT_DOWN, 0, 0, 0, [IntPtr]::Zero)
+        [DoppelAct]::mouse_event($LEFT_DOWN, 0, 0, 0, [IntPtr]::Zero)
         Start-Sleep -Milliseconds 80
         # Move in steps so the target application sees a real drag, not a jump.
         $steps = 12
         for ($i = 1; $i -le $steps; $i++) {
           $x = [int]($action.x1 + (($action.x2 - $action.x1) * $i / $steps))
           $y = [int]($action.y1 + (($action.y2 - $action.y1) * $i / $steps))
-          [void][MimicAct]::SetCursorPos($x, $y)
+          [void][DoppelAct]::SetCursorPos($x, $y)
           Start-Sleep -Milliseconds 16
         }
         Start-Sleep -Milliseconds 80
-        [MimicAct]::mouse_event($LEFT_UP, 0, 0, 0, [IntPtr]::Zero)
+        [DoppelAct]::mouse_event($LEFT_UP, 0, 0, 0, [IntPtr]::Zero)
         $entry.detail = "$($action.x1),$($action.y1) -> $($action.x2),$($action.y2)"
       }
 
@@ -165,10 +179,10 @@ foreach ($action in $actions) {
         $dir = [string]$action.direction
         for ($i = 0; $i -lt $amount; $i++) {
           switch ($dir) {
-            'up'    { [MimicAct]::mouse_event($WHEEL, 0, 0, 120, [IntPtr]::Zero) }
-            'down'  { [MimicAct]::mouse_event($WHEEL, 0, 0, [uint32]4294967176, [IntPtr]::Zero) }
-            'right' { [MimicAct]::mouse_event($HWHEEL, 0, 0, 120, [IntPtr]::Zero) }
-            'left'  { [MimicAct]::mouse_event($HWHEEL, 0, 0, [uint32]4294967176, [IntPtr]::Zero) }
+            'up'    { [DoppelAct]::mouse_event($WHEEL, 0, 0, 120, [IntPtr]::Zero) }
+            'down'  { [DoppelAct]::mouse_event($WHEEL, 0, 0, [uint32]4294967176, [IntPtr]::Zero) }
+            'right' { [DoppelAct]::mouse_event($HWHEEL, 0, 0, 120, [IntPtr]::Zero) }
+            'left'  { [DoppelAct]::mouse_event($HWHEEL, 0, 0, [uint32]4294967176, [IntPtr]::Zero) }
             default { throw "Unknown scroll direction '$dir'" }
           }
           Start-Sleep -Milliseconds 40
@@ -206,15 +220,15 @@ foreach ($action in $actions) {
       }
 
       'cursor-pos' {
-        $p = New-Object 'MimicAct+POINT'
-        [void][MimicAct]::GetCursorPos([ref]$p)
+        $p = New-Object 'DoppelAct+POINT'
+        [void][DoppelAct]::GetCursorPos([ref]$p)
         $entry.detail = [ordered]@{ x = $p.X; y = $p.Y }
       }
 
       'screen-size' {
         $entry.detail = [ordered]@{
-          width  = [MimicAct]::GetSystemMetrics(0)
-          height = [MimicAct]::GetSystemMetrics(1)
+          width  = [DoppelAct]::GetSystemMetrics(0)
+          height = [DoppelAct]::GetSystemMetrics(1)
         }
       }
 
@@ -225,7 +239,7 @@ foreach ($action in $actions) {
       }
 
       'list-windows' {
-        $entry.detail = [MimicAct]::Windows() |
+        $entry.detail = [DoppelAct]::Windows() |
           ForEach-Object { [ordered]@{ title = $_.Title; procId = [int]$_.ProcId } }
       }
 

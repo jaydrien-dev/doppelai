@@ -37,7 +37,9 @@ html {
    to be genuinely see-through, or it renders as a grey square on the desktop.
    The class is set by app/overlay/page.tsx on mount. */
 html.overlay,
-html.overlay body {
+html.overlay body,
+html.whisper,
+html.whisper body {
   background: transparent !important;
   overflow: hidden;
 }
@@ -155,10 +157,121 @@ h4 {
 }
 
 /* ---------------------------------------------------------------------------
+   Rich text — markdown output from Doppel's answers
+   --------------------------------------------------------------------------- */
+
+.rich-text {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-wrap: break-word;
+}
+
+.rich-text > * + * {
+  margin-top: 0.75em;
+}
+
+.rich-text h1,
+.rich-text h2,
+.rich-text h3 {
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  margin-top: 1.25em;
+}
+
+.rich-text h1 { font-size: 1.15em; }
+.rich-text h2 { font-size: 1.05em; }
+.rich-text h3 { font-size: 1em; }
+
+.rich-text p { margin: 0.5em 0; }
+
+.rich-text ul,
+.rich-text ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+
+.rich-text li { margin: 0.2em 0; }
+.rich-text li::marker { color: var(--slate); }
+
+.rich-text strong { font-weight: 600; }
+.rich-text em { font-style: italic; }
+
+.rich-text a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.rich-text blockquote {
+  border-left: 3px solid var(--primary-soft);
+  padding: 0.25em 0.75em;
+  color: var(--slate);
+  margin: 0.5em 0;
+}
+
+.rich-text hr {
+  border: none;
+  border-top: 1px solid var(--ink-soft);
+  margin: 1em 0;
+}
+
+/* Inline code */
+.rich-inline-code {
+  background: var(--primary-soft);
+  color: var(--primary);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: var(--font-mono, "SF Mono", "Cascadia Code", "Fira Code", monospace);
+}
+
+/* Code blocks */
+.rich-code-block {
+  background: var(--bg-base);
+  box-shadow: var(--elev-pressed-sm);
+  border-radius: var(--radius-control);
+  padding: 14px 18px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+  font-family: var(--font-mono, "SF Mono", "Cascadia Code", "Fira Code", monospace);
+  color: var(--ink);
+}
+
+/* Tables */
+.rich-table-wrap {
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+
+.rich-text table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+.rich-text th,
+.rich-text td {
+  padding: 0.4em 0.75em;
+  text-align: left;
+  border-bottom: 1px solid var(--ink-soft);
+}
+
+.rich-text th {
+  font-weight: 600;
+  color: var(--slate);
+  font-size: var(--text-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
+
+/* ---------------------------------------------------------------------------
    Motion
    --------------------------------------------------------------------------- */
 
-@keyframes mimic-breathe {
+@keyframes doppel-breathe {
   0%,
   100% {
     opacity: 0.35;
@@ -170,7 +283,7 @@ h4 {
   }
 }
 
-@keyframes mimic-ring {
+@keyframes doppel-ring {
   0% {
     opacity: 0.5;
     transform: scale(0.7);

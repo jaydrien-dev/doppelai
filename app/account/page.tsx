@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { mimic, useMimic } from "@/lib/store";
+import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { ago } from "@/lib/time";
 import type { AccountOverview } from "@/lib/types";
@@ -18,13 +18,13 @@ import { Button, SectionHeading } from "@/components/ui";
  * central claim rather than a footnote.
  */
 export default function AccountPage() {
-  const account = useMimic((s) => s.account);
+  const account = useDoppel((s) => s.account);
   const [overview, setOverview] = useState<AccountOverview | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!account.signedIn) return setOverview(null);
-    const result = await mimic.accountOverview();
+    const result = await doppel.accountOverview();
     setOverview(result?.ok ? result : null);
   }, [account.signedIn]);
 
@@ -95,7 +95,7 @@ function SignIn({
   onNote: (s: string | null) => void;
   onDone: () => void;
 }) {
-  const pendingEmail = useMimic((s) => s.account.pendingEmail);
+  const pendingEmail = useDoppel((s) => s.account.pendingEmail);
   const [email, setEmail] = useState("");
   const [link, setLink] = useState("");
   const [password, setPassword] = useState("");
@@ -106,7 +106,7 @@ function SignIn({
   const send = async () => {
     setBusy(true);
     onNote(null);
-    const result = await mimic.requestLink(email);
+    const result = await doppel.requestLink(email);
     setBusy(false);
     if (!result?.ok) {
       onNote(result?.error === "unreachable" ? voice.account.unreachable : voice.account.linkFailed(""));
@@ -118,7 +118,7 @@ function SignIn({
 
   const redeem = async () => {
     setBusy(true);
-    const result = await mimic.verifyLink(link.trim());
+    const result = await doppel.verifyLink(link.trim());
     setBusy(false);
     if (!result?.ok) return onNote(voice.account.linkFailed(result?.error ?? ""));
     onNote(null);
@@ -127,7 +127,7 @@ function SignIn({
 
   const withPassword = async () => {
     setBusy(true);
-    const result = await mimic.signInWithPassword(email, password);
+    const result = await doppel.signInWithPassword(email, password);
     setBusy(false);
     if (!result?.ok) {
       onNote(
@@ -244,8 +244,8 @@ function SignedIn({
   onNote: (s: string | null) => void;
   onRefresh: () => void;
 }) {
-  const account = useMimic((s) => s.account);
-  const now = useMimic((s) => s.now);
+  const account = useDoppel((s) => s.account);
+  const now = useDoppel((s) => s.now);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [password, setPassword] = useState("");
@@ -253,7 +253,7 @@ function SignedIn({
   const devices = overview?.devices ?? [];
 
   const revoke = async (id: string) => {
-    const result = await mimic.revokeAccountDevice(id);
+    const result = await doppel.revokeAccountDevice(id);
     setConfirming(null);
     onNote(result?.ok ? voice.account.revoked : "I couldn't cut that one off.");
     onRefresh();
@@ -327,7 +327,7 @@ function SignedIn({
           <Button
             onClick={async () => {
               if (!window.confirm(voice.account.signOutAllConfirm)) return;
-              const result = await mimic.signOutEverywhere(true);
+              const result = await doppel.signOutEverywhere(true);
               onNote(voice.account.signedOutAll(result?.revoked ?? 0));
               onRefresh();
             }}
@@ -337,7 +337,7 @@ function SignedIn({
           <Button
             variant="ghost"
             onClick={async () => {
-              await mimic.signOut();
+              await doppel.signOut();
               onRefresh();
             }}
           >
@@ -364,7 +364,7 @@ function SignedIn({
               />
               <Button
                 onClick={async () => {
-                  const result = await mimic.setAccountPassword(password);
+                  const result = await doppel.setAccountPassword(password);
                   onNote(result?.ok ? voice.account.passwordSet : voice.account.passwordTooShort);
                   if (result?.ok) setPassword("");
                   onRefresh();
@@ -388,7 +388,7 @@ function SignedIn({
           <Button
             className="mt-5"
             onClick={async () => {
-              const result = await mimic.exportAccount();
+              const result = await doppel.exportAccount();
               if (result?.ok && result.file) onNote(voice.account.exported(result.file));
             }}
           >
@@ -408,7 +408,7 @@ function SignedIn({
             {/* The exit offers the export first, and never hides it. */}
             <Button
               onClick={async () => {
-                const result = await mimic.exportAccount();
+                const result = await doppel.exportAccount();
                 if (result?.ok && result.file) onNote(voice.account.exported(result.file));
               }}
             >
@@ -424,7 +424,7 @@ function SignedIn({
                   variant="primary"
                   size="sm"
                   onClick={async () => {
-                    const result = await mimic.deleteAccount();
+                    const result = await doppel.deleteAccount();
                     setDeleting(false);
                     onNote(result?.ok ? voice.account.deleted : "I couldn't delete it.");
                     onRefresh();

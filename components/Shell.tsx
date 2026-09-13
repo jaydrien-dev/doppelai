@@ -2,29 +2,34 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
-import { awayMinutesLeft, mimic, useMimic } from "@/lib/store";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { NAV } from "@/lib/nav";
 import { useDesktop } from "@/lib/desktop";
+import { ago } from "@/lib/time";
+import { appLabel } from "@/lib/events";
+import type { NarrationLine, BrainStats } from "@/lib/types";
 import { Pulse } from "./Pulse";
 import { Mascot } from "./Mascot";
+import type { Mood } from "./Mascot";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
-import { WatchThis } from "./WatchThis";
-import { GraduationModal } from "./GraduationModal";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const connect = useMimic((s) => s.connect);
-  const tick = useMimic((s) => s.tick);
-  const paused = useMimic((s) => s.observation.paused);
-  const away = useMimic((s) => s.away);
-  const now = useMimic((s) => s.now);
-  const teaching = useMimic((s) => s.teaching);
-  const setTeaching = useMimic((s) => s.setTeaching);
+  const connect = useDoppel((s) => s.connect);
+  const tick = useDoppel((s) => s.tick);
+  const paused = useDoppel((s) => s.observation.paused);
+  const narration = useDoppel((s) => s.narration);
+  const nudges = useDoppel((s) => s.nudges);
+  const agents = useDoppel((s) => s.agents);
+  const now = useDoppel((s) => s.now);
+  const flash = useDoppel((s) => s.flash);
+  const setFlash = useDoppel((s) => s.setFlash);
+  const updateStatus = useDoppel((s) => s.updateStatus);
   const { desktop, mac } = useDesktop();
 
-  /* One connection to the main process, held for the life of the window. */
   useEffect(() => {
     connect();
   }, [connect]);
@@ -34,66 +39,63 @@ export function Shell({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, [tick]);
 
-  const isTheatre = pathname.startsWith("/run");
-  const isPocket = pathname.startsWith("/pocket");
   /* The overlay is a bare transparent window — no rail, no panels, no chrome. */
-  const isOverlay = pathname.startsWith("/overlay");
-
-  /* Away Mode cools the whole app down a little: the heartbeat slows. */
-  const ambient = away.active ? { ["--pulse-cycle" as string]: "6.5s" } : undefined;
-
-  const dragStrip = desktop ? (
-    <div
-      aria-hidden
-      className="fixed left-0 right-0 top-0 z-40"
-      style={{ height: 44, WebkitAppRegion: "drag" } as React.CSSProperties}
-    />
-  ) : null;
-
-  const chrome = (
-    <>
-      <GraduationModal />
-      <WatchThis open={teaching} onClose={() => setTeaching(false)} />
-      <DiagnosticsPanel />
-    </>
-  );
+  const isOverlay = pathname.startsWith("/overlay") || pathname.startsWith("/whisper");
 
   if (isOverlay) return <>{children}</>;
 
-  if (isPocket) {
-    return (
-      <div style={ambient}>
-        {dragStrip}
-        {children}
-      </div>
-    );
-  }
+  /* ---- derived state for ambient presence ---- */
 
-  if (isTheatre) {
-    return (
-      <div style={ambient}>
-        {dragStrip}
-        {children}
-        {chrome}
-      </div>
-    );
-  }
+  const activeAgent = agents.find((t) => t.status === "parked") ?? agents.find((t) => t.status === "running") ?? null;
+  const agentBusy = agents.some((t) => ["running", "parked"].includes(t.status));
+
+  const mascotMood: Mood = paused
+    ? "paused"
+    : agentBusy
+      ? "working"
+      : narration[0] && now - narration[0].at < 15_000
+        ? "watching"
+        : "idle";
+
+  const lastSeen = narration[0];
+  const hasNudges = nudges.length > 0;
+
+  /* Whether Doppel is actively doing something (watching or working). */
+  const alive = !paused && (mascotMood === "watching" || mascotMood === "working");
 
   return (
     <div
       className="mx-auto flex min-h-dvh w-full max-w-[1240px] flex-col md:flex-row"
-      style={{ ...ambient, paddingTop: desktop ? 20 : 0 }}
+      style={{ paddingTop: desktop ? 20 : 0 }}
     >
-      {dragStrip}
+      {desktop && (
+        <div
+          aria-hidden
+          className="fixed left-0 right-0 top-0 z-40"
+          style={{ height: 44, WebkitAppRegion: "drag" } as React.CSSProperties}
+        />
+      )}
 
       {/* ---------------------------------------------------------------- rail */}
       <aside
         className="shrink-0 px-6 pt-8 md:sticky md:top-0 md:h-dvh md:w-[236px] md:px-8 md:py-10"
-        style={desktop && mac ? { paddingTop: 52 } : undefined}
+        style={{
+          ...(desktop && mac ? { paddingTop: 52 } : undefined),
+          /* Feature 4: soft edge glow when actively watching */
+          borderRight: "1px solid transparent",
+          transition: "border-color 0.6s ease, box-shadow 0.6s ease",
+          ...(alive
+            ? {
+                borderRight: "1px solid var(--primary-glow)",
+                boxShadow: "1px 0 24px -4px var(--primary-glow)",
+              }
+            : {}),
+        }}
       >
         <div className="flex items-center justify-between md:block">
           <Link href="/" className="flex items-center gap-3">
-            <Mascot mood={paused ? "paused" : away.active ? "working" : "idle"} size="sm" />
+            {/* Feature 3: mascot mood reacts to state */}
+            <Mascot mood={mascotMood} size="sm" />
             <span
               style={{
                 fontSize: "var(--text-title)",
@@ -101,8 +103,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 letterSpacing: "var(--tracking-tight)",
               }}
             >
-              mimic
+              doppel
             </span>
+            {/* Feature 1: breathing dot — tiny pulse next to the name */}
+            <Pulse size={12} paused={paused} className="-ml-1" />
           </Link>
           <div className="md:hidden">
             <Pulse size={40} paused={paused} />
@@ -113,6 +117,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
           {NAV.map((item) => {
             const active =
               item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
+            /* Feature 5: nudge badge on Home */
+            const showBadge = item.href === "/" && hasNudges && !active;
             return (
               <Link
                 key={item.href}
@@ -128,14 +134,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   boxShadow: active ? "var(--elev-pressed-sm)" : "none",
                 }}
               >
-                {item.label}
-                {item.href === "/away" && away.active && (
+                <span>{item.label}</span>
+                {showBadge && (
                   <span
-                    aria-hidden
-                    className="block shrink-0 rounded-full"
+                    className="shrink-0 rounded-full"
                     style={{
-                      width: 6,
-                      height: 6,
+                      width: 7,
+                      height: 7,
                       background: "var(--primary)",
                       boxShadow: "0 0 6px var(--primary-glow)",
                     }}
@@ -146,47 +151,22 @@ export function Shell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="mt-6 flex flex-col gap-2 md:mt-8">
-          {/* Teaching is always one click away — it is the cold-start answer. */}
-          <button
-            onClick={() => setTeaching(true)}
-            className="pressable w-full cursor-pointer text-left"
-            style={{
-              padding: "12px 16px",
-              borderRadius: "var(--radius-control)",
-              background: "var(--primary-soft)",
-              color: "var(--primary)",
-              fontSize: "var(--text-sm)",
-              fontWeight: 600,
-            }}
-          >
-            {voice.teach.cta}
-          </button>
+        {/* Feature 2: ambient status — what Doppel last noticed */}
+        <AmbientStatus lastSeen={lastSeen} agentBusy={!!agentBusy} agent={activeAgent} now={now} paused={paused} />
 
-          <button
-            onClick={() => mimic.openPocket()}
-            className="pressable w-full cursor-pointer text-left"
-            style={{
-              padding: "12px 16px",
-              borderRadius: "var(--radius-control)",
-              background: "var(--surface)",
-              boxShadow: "var(--elev-raised-sm)",
-              fontSize: "var(--text-sm)",
-            }}
-          >
-            Open Pocket
-          </button>
-        </div>
+        {/* Feature 6: focus timer — how long you've been in one app */}
+        <FocusTimer narration={narration} now={now} paused={paused} />
+
+        {/* Feature 7: memory depth — how much Doppel knows */}
+        <MemoryDepth />
+
+        {/* Feature 8: quick recall search */}
+        <QuickRecall />
 
         {/* The stop button. Never more than one click away, on any screen. */}
         <div className="mt-8 md:absolute md:bottom-10 md:left-8 md:right-8 md:mt-0">
-          {away.active && (
-            <p className="micro-label mb-3" style={{ color: "var(--primary)" }}>
-              {voice.away.active} &middot; {awayMinutesLeft(away, now)}m
-            </p>
-          )}
           <button
-            onClick={() => mimic.setPaused(!paused)}
+            onClick={() => doppel.setPaused(!paused)}
             className="pressable w-full cursor-pointer text-left"
             style={{
               padding: "14px 16px",
@@ -215,7 +195,422 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <main className="min-w-0 flex-1 px-6 py-10 md:px-12 md:py-14">{children}</main>
 
-      {chrome}
+      <DiagnosticsPanel />
+
+      {/* Update banner */}
+      <UpdateBanner status={updateStatus} />
+
+      {/* Flash toast */}
+      <FlashToast message={flash} onDismiss={() => setFlash(null)} />
     </div>
+  );
+}
+
+/* ===========================================================================
+   Ambient Status — one line showing what Doppel last noticed
+   =========================================================================== */
+
+interface AmbientProps {
+  lastSeen: { at: number; app: string | null; text: string; salience: number } | undefined;
+  agentBusy: boolean;
+  agent: { title: string; step: number } | null;
+  now: number;
+  paused: boolean;
+}
+
+function AmbientStatus({ lastSeen, agentBusy, agent, now, paused }: AmbientProps) {
+  if (paused) {
+    return (
+      <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
+        <p
+          className="agent-voice"
+          style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", opacity: 0.6 }}
+        >
+          Paused
+        </p>
+      </div>
+    );
+  }
+
+  if (agentBusy && agent) {
+    return (
+      <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
+        <p
+          className="agent-voice"
+          style={{ fontSize: "var(--text-xs, 11px)", color: "var(--primary)" }}
+        >
+          Working on: {agent.title.length > 36 ? agent.title.slice(0, 36) + "\u2026" : agent.title}
+        </p>
+        <p className="micro-label mt-1">step {agent.step}</p>
+      </div>
+    );
+  }
+
+  if (!lastSeen) {
+    return (
+      <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
+        <p
+          className="agent-voice"
+          style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", opacity: 0.5 }}
+        >
+          Watching
+        </p>
+      </div>
+    );
+  }
+
+  const truncated =
+    lastSeen.text.length > 60 ? lastSeen.text.slice(0, 60) + "\u2026" : lastSeen.text;
+
+  return (
+    <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={lastSeen.at}
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
+        >
+          <p
+            className="agent-voice"
+            style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", lineHeight: 1.4 }}
+          >
+            {truncated}
+          </p>
+          <p className="micro-label mt-1">
+            {lastSeen.app ? `${appLabel(lastSeen.app)} · ` : ""}
+            {ago(lastSeen.at, now)}
+          </p>
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/* ===========================================================================
+   Focus Timer — how long you've been in one app without switching
+   =========================================================================== */
+
+function FocusTimer({
+  narration,
+  now,
+  paused,
+}: {
+  narration: NarrationLine[];
+  now: number;
+  paused: boolean;
+}) {
+  /* Find the current app and when the user first started using it
+     continuously (no app change in narration). */
+  const focus = useMemo(() => {
+    if (paused || narration.length === 0) return null;
+    const currentApp = narration[0]?.app;
+    if (!currentApp) return null;
+
+    /* Walk backwards through narration to find when this app streak started. */
+    let streakStart = narration[0].at;
+    for (let i = 1; i < narration.length; i++) {
+      if (narration[i].app !== currentApp) break;
+      streakStart = narration[i].at;
+    }
+    const mins = Math.floor((now - streakStart) / 60_000);
+    if (mins < 2) return null; /* Don't show for <2 min */
+    return { app: currentApp, mins };
+  }, [narration, now, paused]);
+
+  if (!focus) return null;
+
+  const label =
+    focus.mins >= 60
+      ? `${Math.floor(focus.mins / 60)}h ${focus.mins % 60}m`
+      : `${focus.mins}m`;
+
+  return (
+    <div className="mt-4 hidden md:block">
+      <p
+        style={{
+          fontSize: "var(--text-xs, 11px)",
+          color: "var(--primary)",
+          opacity: 0.8,
+          letterSpacing: "0.02em",
+        }}
+      >
+        Focused · {label}
+      </p>
+      <p className="micro-label" style={{ marginTop: 2 }}>
+        {appLabel(focus.app)}
+      </p>
+    </div>
+  );
+}
+
+/* ===========================================================================
+   Memory Depth — how much Doppel knows about this person
+   =========================================================================== */
+
+function MemoryDepth() {
+  const [stats, setStats] = useState<BrainStats | null>(null);
+
+  useEffect(() => {
+    window.doppel?.brainStats?.().then(setStats);
+    /* Refresh every 2 minutes — episodes accumulate slowly. */
+    const t = setInterval(() => {
+      window.doppel?.brainStats?.().then(setStats);
+    }, 120_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!stats || (stats.episodes === 0 && stats.entities === 0)) return null;
+
+  const total = stats.episodes + stats.entities;
+  const days = stats.oldest
+    ? Math.max(1, Math.floor((Date.now() - stats.oldest) / 86_400_000))
+    : 0;
+
+  return (
+    <div className="mt-4 hidden md:block">
+      <p
+        style={{
+          fontSize: "var(--text-xs, 11px)",
+          color: "var(--slate)",
+          opacity: 0.7,
+        }}
+      >
+        {total.toLocaleString()} things remembered
+      </p>
+      {days > 0 && (
+        <p className="micro-label" style={{ marginTop: 2 }}>
+          watching for {days} {days === 1 ? "day" : "days"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ===========================================================================
+   Quick Recall — tiny search box in the sidebar
+   =========================================================================== */
+
+function QuickRecall() {
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const search = async () => {
+    const q = query.trim();
+    if (!q || busy) return;
+    setBusy(true);
+    setResult(null);
+    const r = await window.doppel?.askBrainFast?.(q);
+    setBusy(false);
+    setResult(r?.ok && r.text ? r.text : "Nothing comes to mind.");
+  };
+
+  return (
+    <div className="mt-5 hidden md:block">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            if (!e.target.value) setResult(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") search();
+            if (e.key === "Escape") { setQuery(""); setResult(null); }
+          }}
+          placeholder="Ask memory..."
+          spellCheck={false}
+          className="min-w-0 flex-1"
+          style={{
+            padding: "8px 12px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--bg-base)",
+            boxShadow: "var(--elev-pressed-sm)",
+            fontSize: "var(--text-xs, 11px)",
+            color: "var(--ink)",
+            border: "none",
+            outline: "none",
+          }}
+        />
+      </div>
+      {busy && (
+        <p
+          className="agent-voice mt-2"
+          style={{ fontSize: "var(--text-xs, 11px)", color: "var(--primary)" }}
+        >
+          Thinking...
+        </p>
+      )}
+      {result && !busy && (
+        <motion.div
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className="mt-2"
+        >
+          <p
+            className="agent-voice"
+            style={{
+              fontSize: "var(--text-xs, 11px)",
+              color: "var(--slate)",
+              lineHeight: 1.5,
+              maxHeight: 120,
+              overflowY: "auto",
+            }}
+          >
+            {result}
+          </p>
+          <button
+            onClick={() => { setQuery(""); setResult(null); }}
+            className="micro-label mt-1 cursor-pointer"
+            style={{ color: "var(--primary)", background: "none", border: "none" }}
+          >
+            Clear
+          </button>
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+/* ===========================================================================
+   Flash Toast — shows errors and transient messages, auto-dismisses
+   =========================================================================== */
+
+function FlashToast({
+  message,
+  onDismiss,
+}: {
+  message: string | null;
+  onDismiss: () => void;
+}) {
+  useEffect(() => {
+    if (!message) return;
+    const t = setTimeout(onDismiss, 4000);
+    return () => clearTimeout(t);
+  }, [message, onDismiss]);
+
+  return (
+    <AnimatePresence>
+      {message && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 20 }}
+          transition={{ duration: 0.25, ease: [0.22, 0.61, 0.36, 1] }}
+          style={{
+            position: "fixed",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 9999,
+            maxWidth: 480,
+            width: "calc(100% - 48px)",
+            padding: "14px 20px",
+            borderRadius: "var(--radius-card-sm)",
+            background: "var(--surface)",
+            boxShadow: "var(--elev-raised), 0 4px 24px rgba(0,0,0,0.25)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <p style={{ fontSize: "var(--text-sm)", color: "var(--ink)", flex: 1 }}>
+            {message}
+          </p>
+          <button
+            onClick={onDismiss}
+            className="cursor-pointer shrink-0"
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: "var(--text-sm)",
+              color: "var(--slate)",
+              padding: "2px 6px",
+            }}
+          >
+            &times;
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ===========================================================================
+   Update Banner — shows when an update is downloaded and ready to install
+   =========================================================================== */
+
+function UpdateBanner({
+  status,
+}: {
+  status: { state: string; version?: string | null };
+}) {
+  const [dismissed, setDismissed] = useState(false);
+
+  if (dismissed || status.state !== "downloaded") return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.22, 0.61, 0.36, 1] }}
+      style={{
+        position: "fixed",
+        top: 52,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 100,
+        maxWidth: 420,
+        width: "calc(100% - 48px)",
+        padding: "12px 20px",
+        borderRadius: "var(--radius-card-sm)",
+        background: "var(--primary)",
+        color: "white",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+      }}
+    >
+      <p style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>
+        Update ready{status.version ? ` (v${status.version})` : ""} — restart to apply
+      </p>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => doppel.installUpdate()}
+          className="cursor-pointer"
+          style={{
+            background: "rgba(255,255,255,0.2)",
+            border: "none",
+            borderRadius: "var(--radius-control)",
+            padding: "6px 14px",
+            fontSize: "var(--text-sm)",
+            fontWeight: 600,
+            color: "white",
+          }}
+        >
+          Restart
+        </button>
+        <button
+          onClick={() => setDismissed(true)}
+          className="cursor-pointer"
+          style={{
+            background: "none",
+            border: "none",
+            fontSize: "var(--text-sm)",
+            color: "rgba(255,255,255,0.7)",
+            padding: "2px 6px",
+          }}
+        >
+          &times;
+        </button>
+      </div>
+    </motion.div>
   );
 }

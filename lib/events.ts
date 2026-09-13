@@ -35,8 +35,8 @@ const APP_NAMES: Record<string, string> = {
   powerpnt: "PowerPoint",
   teams: "Teams",
   slack: "Slack",
-  mimic: "Mimic",
-  electron: "Mimic",
+  doppel: "Doppel",
+  electron: "Doppel",
 };
 
 export const appLabel = (app?: string) =>
@@ -61,7 +61,7 @@ const APP_GLYPHS: Record<string, AppId> = {
 export const appGlyph = (app?: string): AppId =>
   APP_GLYPHS[(app ?? "").toLowerCase()] ?? "browser";
 
-/** The window Mimic is currently watching, if it's seen one recently. */
+/** The window Doppel is currently watching, if it's seen one recently. */
 export function currentApp(events: ObservedEvent[]): string | undefined {
   return events.find((e) => e.kind === "window.focus")?.app;
 }

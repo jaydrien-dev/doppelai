@@ -1,0 +1,67 @@
+{
+  "id": "google-mail",
+  "name": "Gmail",
+  "description": "Read your inbox, search emails, and send messages through Gmail.",
+  "version": "0.1.0",
+  "author": "Doppel",
+  "icon": "mail",
+  "category": "productivity",
+  "type": "api",
+  "builtin": true,
+  "permissions": ["email"],
+  "config": [],
+  "auth": {
+    "provider": "google",
+    "clientId": "DOPPEL_GOOGLE_CLIENT_ID",
+    "authUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenUrl": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "openid",
+      "email"
+    ]
+  },
+  "tools": [
+    {
+      "name": "gmail_inbox",
+      "description": "Read recent Gmail messages. Returns sender, subject, date, and a preview.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": { "type": "number", "description": "Number of messages. Default: 10, max: 20." },
+          "unread_only": { "type": "boolean", "description": "Only unread messages. Default: false." }
+        }
+      }
+    },
+    {
+      "name": "gmail_search",
+      "description": "Search Gmail by keyword, sender, or label. Uses Gmail search syntax.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Gmail search query (e.g. 'from:alice subject:invoice')." },
+          "count": { "type": "number", "description": "Max results. Default: 10." }
+        }
+      }
+    },
+    {
+      "name": "gmail_send",
+      "description": "Send an email through Gmail. Confirm with the person before sending.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["to", "subject", "body"],
+        "properties": {
+          "to": { "type": "string", "description": "Recipient email address(es), comma-separated." },
+          "cc": { "type": "string", "description": "CC address(es), comma-separated." },
+          "subject": { "type": "string", "description": "Subject line." },
+          "body": { "type": "string", "description": "Email body text." }
+        }
+      }
+    }
+  ]
+}

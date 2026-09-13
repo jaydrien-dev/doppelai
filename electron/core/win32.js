@@ -84,7 +84,7 @@ function act(actions) {
 
   const planFile = path.join(
     os.tmpdir(),
-    `mimic-plan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+    `doppel-plan-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
   );
   fs.writeFileSync(planFile, JSON.stringify(actions), "utf8");
 

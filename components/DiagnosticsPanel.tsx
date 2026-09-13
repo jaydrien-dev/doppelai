@@ -2,26 +2,22 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
-import { mimic, useMimic } from "@/lib/store";
+import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { ago } from "@/lib/time";
 import { describeEvent } from "@/lib/events";
 import { Button } from "./ui";
 
 /**
- * A window onto what Mimic is actually seeing.
- *
- * There is nothing to fake any more — no clock to advance, no observation to
- * force — so this shows the raw event stream instead, plus the few levers that
- * are genuinely useful while working on it.
+ * A window onto what Doppel is actually seeing.
  */
 export function DiagnosticsPanel() {
-  const open = useMimic((s) => s.panelOpen);
-  const setOpen = useMimic((s) => s.setPanelOpen);
-  const events = useMimic((s) => s.recentEvents);
-  const stats = useMimic((s) => s.stats);
-  const now = useMimic((s) => s.now);
-  const connected = useMimic((s) => s.connected);
+  const open = useDoppel((s) => s.panelOpen);
+  const setOpen = useDoppel((s) => s.setPanelOpen);
+  const events = useDoppel((s) => s.recentEvents);
+  const stats = useDoppel((s) => s.stats);
+  const now = useDoppel((s) => s.now);
+  const connected = useDoppel((s) => s.connected);
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
@@ -31,7 +27,7 @@ export function DiagnosticsPanel() {
       const el = e.target as HTMLElement | null;
       if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
       if (el?.isContentEditable) return;
-      setOpen(!useMimic.getState().panelOpen);
+      setOpen(!useDoppel.getState().panelOpen);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -96,10 +92,7 @@ export function DiagnosticsPanel() {
             </ul>
 
             <div className="mt-6 flex flex-col gap-2">
-              <Button size="sm" onClick={() => mimic.mineNow()}>
-                {voice.panel.mine}
-              </Button>
-              <Button size="sm" onClick={() => mimic.revealTrash()}>
+              <Button size="sm" onClick={() => doppel.revealTrash()}>
                 {voice.panel.trash}
               </Button>
               <Button
@@ -107,7 +100,7 @@ export function DiagnosticsPanel() {
                 variant={confirming ? "primary" : "quiet"}
                 onClick={() => {
                   if (!confirming) return setConfirming(true);
-                  mimic.reset();
+                  doppel.reset();
                   setConfirming(false);
                 }}
               >

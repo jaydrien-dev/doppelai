@@ -7,7 +7,7 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 
 /**
  * Relative, plain-language time. Kept relative on purpose: it reads the way
- * Mimic talks, and it keeps the prototype free of timezone accidents.
+ * Doppel talks, and it keeps the prototype free of timezone accidents.
  */
 export function ago(then: number | undefined, now: number): string {
   if (then === undefined) return "not yet";

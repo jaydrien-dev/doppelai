@@ -1,6 +1,7 @@
 "use client";
 
-import { mimic, useMimic } from "@/lib/store";
+import { useEffect, useState } from "react";
+import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { ago } from "@/lib/time";
 import { describeEvent } from "@/lib/events";
@@ -27,13 +28,14 @@ const ACT: { key: keyof Permissions; label: string; detail: string }[] = [
 ];
 
 export default function PermissionsPage() {
-  const permissions = useMimic((s) => s.permissions);
-  const paused = useMimic((s) => s.observation.paused);
-  const roots = useMimic((s) => s.observation.roots);
-  const entities = useMimic((s) => s.entities);
-  const events = useMimic((s) => s.recentEvents);
-  const overlay = useMimic((s) => s.overlay);
-  const now = useMimic((s) => s.now);
+  const permissions = useDoppel((s) => s.permissions);
+  const paused = useDoppel((s) => s.observation.paused);
+  const roots = useDoppel((s) => s.observation.roots);
+  const events = useDoppel((s) => s.recentEvents);
+  const overlay = useDoppel((s) => s.overlay);
+  const whisper = useDoppel((s) => s.whisper);
+  const nudgeSettings = useDoppel((s) => s.nudgeSettings);
+  const now = useDoppel((s) => s.now);
 
   return (
     <div className="max-w-[720px]">
@@ -62,7 +64,7 @@ export default function PermissionsPage() {
                 </p>
               </div>
             </div>
-            <Toggle checked={!paused} onChange={(on) => mimic.setPaused(!on)} label="Observation" />
+            <Toggle checked={!paused} onChange={(on) => doppel.setPaused(!on)} label="Observation" />
           </div>
         </div>
       </section>
@@ -71,6 +73,9 @@ export default function PermissionsPage() {
       <section className="mb-14">
         <ApiKeyPanel />
       </section>
+
+      {/* -------------------------------------------------------------- usage */}
+      <UsagePanel />
 
       {/* ----------------------------------------------------------- overlay */}
       <section className="mb-14">
@@ -86,17 +91,97 @@ export default function PermissionsPage() {
             </div>
             <Toggle
               checked={overlay.enabled}
-              onChange={(on) => mimic.overlaySetEnabled(on)}
+              onChange={(on) => doppel.overlaySetEnabled(on)}
               label="Overlay"
             />
           </div>
           {overlay.enabled && (
-            <Button variant="ghost" size="sm" className="mt-5" onClick={() => mimic.overlayHome()}>
+            <Button variant="ghost" size="sm" className="mt-5" onClick={() => doppel.overlayHome()}>
               {voice.overlay.home}
             </Button>
           )}
         </div>
       </section>
+
+      {/* ---------------------------------------------------------- whisper */}
+      <section className="mb-14">
+        <div className={whisper.enabled ? "raised" : "flat"} style={{ padding: 28 }}>
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div className="min-w-0 flex-1">
+              <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+                {voice.whisper.title}
+              </p>
+              <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
+                {voice.whisper.body}
+              </p>
+              {whisper.enabled && (
+                <p className="mt-3" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+                  Hotkey: <span style={{ fontWeight: 600, color: "var(--ink)" }}>{whisper.hotkey}</span>
+                  {whisper.autoDismiss > 0 && (
+                    <span> · auto-dismiss after {whisper.autoDismiss}s</span>
+                  )}
+                </p>
+              )}
+            </div>
+            <Toggle
+              checked={whisper.enabled}
+              onChange={(on) => doppel.whisperSetEnabled(on)}
+              label="Whisper"
+            />
+          </div>
+          {whisper.enabled && (
+            <Button variant="ghost" size="sm" className="mt-5" onClick={() => doppel.whisperHome()}>
+              {voice.whisper.home}
+            </Button>
+          )}
+        </div>
+
+        {whisper.enabled && (
+          <div className="pressed mt-5" style={{ padding: 28 }}>
+            <p style={{ fontWeight: 600 }}>{voice.whisper.openaiTitle}</p>
+            <p className="agent-voice mt-2" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+              {voice.whisper.openaiBody}
+            </p>
+            <OpenAIKeyInput />
+          </div>
+        )}
+      </section>
+
+      {/* -------------------------------------------------------- nudges */}
+      <section className="mb-14">
+        <div className={nudgeSettings.enabled ? "raised" : "flat"} style={{ padding: 28 }}>
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div className="min-w-0 flex-1">
+              <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+                Proactive suggestions
+              </p>
+              <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
+                Doppel will suggest things when it notices patterns, open tasks, or repeated work.
+              </p>
+            </div>
+            <Toggle
+              checked={nudgeSettings.enabled}
+              onChange={(on) => doppel.nudgeSetEnabled(on)}
+              label="Nudges"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ------------------------------------------------- biometric lock */}
+      <BiometricPanel />
+
+      {/* ------------------------------------------------- integrations */}
+      <section className="mb-14">
+        <McpConnectPanel />
+      </section>
+
+      {/* -------------------------------------------------------- display */}
+      {permissions.screen && (
+        <section className="mb-14">
+          <DisplayPicker />
+        </section>
+      )}
 
       {/* --------------------------------------------------- it all stays here */}
       <section className="mb-14">
@@ -148,7 +233,7 @@ export default function PermissionsPage() {
                 >
                   {root}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => mimic.removeRoot(root)}>
+                <Button variant="ghost" size="sm" onClick={() => doppel.removeRoot(root)}>
                   {voice.permissions.removeFolder}
                 </Button>
               </div>
@@ -156,7 +241,7 @@ export default function PermissionsPage() {
           </div>
         )}
 
-        <Button className="mt-5" onClick={() => mimic.addRoot()}>
+        <Button className="mt-5" onClick={() => doppel.addRoot()}>
           {voice.permissions.addFolder}
         </Button>
       </section>
@@ -172,7 +257,7 @@ export default function PermissionsPage() {
               detail={p.detail}
               enabled={permissions[p.key]}
               disabled={paused}
-              onToggle={() => mimic.setPermissions({ [p.key]: !permissions[p.key] })}
+              onToggle={() => doppel.setPermissions({ [p.key]: !permissions[p.key] })}
             />
           ))}
         </div>
@@ -188,7 +273,7 @@ export default function PermissionsPage() {
               label={p.label}
               detail={p.detail}
               enabled={permissions[p.key]}
-              onToggle={() => mimic.setPermissions({ [p.key]: !permissions[p.key] })}
+              onToggle={() => doppel.setPermissions({ [p.key]: !permissions[p.key] })}
             />
           ))}
         </div>
@@ -208,13 +293,13 @@ export default function PermissionsPage() {
         )}
 
         <p className="mt-5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-          {voice.rules.reassure("my own trash")}{" "}
+          Anything removed goes to my own trash, never really deleted.{" "}
           <button
-            onClick={() => mimic.revealTrash()}
+            onClick={() => doppel.revealTrash()}
             className="cursor-pointer"
             style={{ color: "var(--primary)" }}
           >
-            {voice.ledger.trash}
+            {voice.panel.trash}
           </button>
         </p>
       </section>
@@ -243,44 +328,68 @@ export default function PermissionsPage() {
         </div>
       </section>
 
-      {/* -------------------------------------------------------------- memory */}
-      <section>
-        <SectionHeading count={entities.length || undefined}>{voice.memory.title}</SectionHeading>
-        <p className="mb-5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-          {voice.memory.body}
-        </p>
-
-        {entities.length === 0 ? (
-          <p className="agent-voice" style={{ color: "var(--slate)" }}>
-            {voice.memory.empty}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {entities.map((e) => (
-              <div
-                key={e.id}
-                className="raised flex flex-wrap items-start justify-between gap-5"
-                style={{ padding: "20px 24px" }}
-              >
-                <div className="min-w-0 flex-1">
-                  <p style={{ fontWeight: 600 }}>{e.name}</p>
-                  <p
-                    className="agent-voice mt-1.5"
-                    style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-                  >
-                    {e.note}
-                  </p>
-                  <p className="micro-label mt-2">{voice.memory.learned(ago(e.learnedAt, now))}</p>
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => mimic.forgetEntity(e.id)}>
-                  {voice.memory.forget}
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
     </div>
+  );
+}
+
+function OpenAIKeyInput() {
+  const ai = useDoppel((s) => s.ai);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await doppel.setOpenAIKey(draft);
+    setBusy(false);
+    if (result?.ok) setDraft("");
+    else setError(result?.detail ?? "That didn't work.");
+  };
+
+  if (ai.openaiConfigured) {
+    return (
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+        <p className="agent-voice" style={{ color: "var(--primary)" }}>
+          {voice.whisper.openaiGood(ai.openaiHint)}
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => doppel.clearOpenAIKey()}>
+          {voice.whisper.openaiClear}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        <input
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && draft && save()}
+          placeholder={voice.whisper.openaiPlaceholder}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1"
+          style={{
+            padding: "12px 16px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--bg-base)",
+            boxShadow: "var(--elev-pressed-sm)",
+            fontSize: "var(--text-sm)",
+            color: "var(--ink)",
+            fontFamily: "var(--font-mono, monospace)",
+          }}
+        />
+        <Button variant="primary" onClick={save} disabled={!draft || busy}>
+          {busy ? "Saving" : voice.whisper.openaiSave}
+        </Button>
+      </div>
+      <p className="agent-voice mt-3" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+        {error ?? voice.whisper.openaiMissing}
+      </p>
+    </>
   );
 }
 
@@ -317,6 +426,247 @@ function Row({
           </p>
         </div>
         <Toggle checked={enabled} onChange={onToggle} label={label} />
+      </div>
+    </div>
+  );
+}
+
+function BiometricPanel() {
+  const security = useDoppel((s) => s.security);
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.doppel?.securityAvailable?.().then((r) => {
+      setAvailable(r?.available ?? false);
+    }).catch(() => setAvailable(false));
+  }, []);
+
+  if (available === null) return null; // still checking
+
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await doppel.securitySetBiometric(!security.biometric);
+    setBusy(false);
+    if (!result?.ok) setError(result?.detail ?? voice.security.failed);
+  };
+
+  return (
+    <section className="mb-14">
+      <div className={security.biometric ? "raised" : "flat"} style={{ padding: 28 }}>
+        <div className="flex flex-wrap items-start justify-between gap-6">
+          <div className="min-w-0 flex-1">
+            <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+              {voice.security.title}
+            </p>
+            <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
+              {available ? voice.security.body : voice.security.unavailable}
+            </p>
+            {error && (
+              <p className="mt-3" style={{ fontSize: "var(--text-sm)", color: "var(--danger, #ef4444)" }}>
+                {error}
+              </p>
+            )}
+          </div>
+          {available && (
+            <Toggle
+              checked={security.biometric}
+              onChange={toggle}
+              label="Biometric lock"
+            />
+          )}
+        </div>
+        {security.biometric && (
+          <div className="mt-5 flex flex-wrap items-center gap-4">
+            <Button variant="ghost" size="sm" onClick={() => doppel.securityLock()}>
+              {voice.security.lockNow}
+            </Button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UsagePanel() {
+  const usage = useDoppel((s) => s.usage);
+  const c = usage?.current;
+  if (!c || !c.calls) return null;
+
+  /* Rough cost estimate based on Anthropic's published pricing.
+     Sonnet: $3/$15, Haiku: $0.80/$4, cache read: 90% off input.
+     We can't tell which model each call used, so we estimate a blend. */
+  const inputCost = (c.inputTokens - (c.cacheRead ?? 0)) * (3 / 1_000_000)
+    + (c.cacheRead ?? 0) * (0.30 / 1_000_000);
+  const outputCost = c.outputTokens * (15 / 1_000_000);
+  const est = inputCost + outputCost;
+
+  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+  return (
+    <section className="mb-14">
+      <div className="pressed" style={{ padding: 28 }}>
+        <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+          Usage this month
+        </p>
+        <div className="mt-5 flex flex-wrap gap-x-10 gap-y-4">
+          <Stat label="API calls" value={String(c.calls)} />
+          <Stat label="Input tokens" value={fmt(c.inputTokens)} />
+          <Stat label="Output tokens" value={fmt(c.outputTokens)} />
+          {c.cacheRead > 0 && <Stat label="Cache hits" value={fmt(c.cacheRead)} />}
+          <Stat label="Est. cost" value={`$${est < 0.01 ? est.toFixed(4) : est.toFixed(2)}`} />
+        </div>
+        {c.month && (
+          <p className="mt-4" style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}>
+            {c.month} · resets each calendar month
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p style={{ fontSize: "var(--text-title)", fontWeight: 600, color: "var(--ink)" }}>{value}</p>
+      <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 2 }}>{label}</p>
+    </div>
+  );
+}
+
+function McpConnectPanel() {
+  const [status, setStatus] = useState<"checking" | "connected" | "disconnected">("checking");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    window.doppel?.mcpCheckClaude?.().then((r) => {
+      setStatus(r?.connected ? "connected" : "disconnected");
+    }).catch(() => setStatus("disconnected"));
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    const result = await window.doppel?.mcpConnectClaude?.();
+    setBusy(false);
+    if (result?.ok) setStatus("connected");
+  };
+
+  return (
+    <div className={status === "connected" ? "raised" : "flat"} style={{ padding: 28 }}>
+      <div className="flex flex-wrap items-start justify-between gap-6">
+        <div className="min-w-0 flex-1">
+          <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+            Integrations
+          </p>
+          <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
+            Let other AI tools access Doppel's memory. Any app that supports MCP can recall what
+            you've been doing, your patterns, and your context.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-4">
+        <div
+          className={status === "connected" ? "pressed" : "flat"}
+          style={{ padding: "14px 20px", flex: 1, minWidth: 200 }}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span
+                className="block shrink-0 rounded-full"
+                style={{
+                  width: 8,
+                  height: 8,
+                  background: status === "connected" ? "var(--primary)" : "var(--slate)",
+                  boxShadow: status === "connected" ? "0 0 8px var(--primary-glow)" : "none",
+                  transition: "all 0.3s ease",
+                }}
+              />
+              <div>
+                <p style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>Claude Desktop</p>
+                <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 2 }}>
+                  {status === "checking"
+                    ? "Checking..."
+                    : status === "connected"
+                      ? "Connected — restart Claude Desktop to activate"
+                      : "Not connected"}
+                </p>
+              </div>
+            </div>
+            {status !== "checking" && (
+              <Button
+                variant={status === "connected" ? "ghost" : "primary"}
+                size="sm"
+                onClick={connect}
+                disabled={busy}
+              >
+                {busy ? "Connecting..." : status === "connected" ? "Reconnect" : "Connect"}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface DisplayInfo {
+  id: string;
+  label: string;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
+function DisplayPicker() {
+  const currentId = useDoppel((s) => s.observation.displayId);
+  const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+
+  useEffect(() => {
+    doppel.listDisplays().then(setDisplays);
+  }, []);
+
+  if (displays.length <= 1) return null;
+
+  return (
+    <div className="raised" style={{ padding: 28 }}>
+      <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+        {voice.permissions.displayTitle}
+      </p>
+      <p className="agent-voice mt-2" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+        {voice.permissions.displayNote}
+      </p>
+      <div className="mt-5 flex flex-wrap gap-3">
+        {displays.map((d) => {
+          const selected = currentId ? currentId === d.id : d.primary;
+          return (
+            <button
+              key={d.id}
+              onClick={() => doppel.setDisplay(d.primary && !currentId ? null : d.primary ? null : d.id)}
+              className="cursor-pointer"
+              style={{
+                padding: "12px 20px",
+                borderRadius: "var(--radius-control)",
+                background: selected ? "var(--primary)" : "var(--bg-base)",
+                color: selected ? "white" : "var(--ink)",
+                fontWeight: selected ? 600 : 400,
+                fontSize: "var(--text-sm)",
+                border: "none",
+                transition: "all 0.15s ease",
+                boxShadow: selected ? "0 2px 8px var(--primary-glow)" : "var(--elev-pressed-sm)",
+              }}
+            >
+              <span>{d.label}</span>
+              <span style={{ opacity: 0.7, marginLeft: 8 }}>
+                {d.width}x{d.height}
+                {d.primary ? " · " + voice.permissions.displayPrimary : ""}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

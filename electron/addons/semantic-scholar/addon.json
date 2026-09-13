@@ -1,0 +1,28 @@
+{
+  "id": "semantic-scholar",
+  "name": "Semantic Scholar",
+  "description": "Search 200M+ academic papers by title, author, or topic. Free, no API key needed.",
+  "version": "0.1.0",
+  "author": "Doppel",
+  "icon": "scholar",
+  "category": "research",
+  "type": "api",
+  "builtin": true,
+  "permissions": ["network"],
+  "config": [],
+  "tools": [
+    {
+      "name": "scholar_search",
+      "description": "Search academic papers via Semantic Scholar. Returns titles, authors, years, abstracts, citation counts, and DOIs.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Academic search query." },
+          "limit": { "type": "number", "description": "Max results (default 10)." }
+        }
+      }
+    }
+  ]
+}

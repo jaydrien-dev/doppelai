@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { mimic, useMimic } from "@/lib/store";
+import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { Button, Toggle } from "./ui";
 
 /**
- * Where Mimic's intelligence comes from.
+ * Where Doppel's intelligence comes from.
  *
  * The key is verified against the API before it is stored, so nobody walks
  * away believing this is switched on when it isn't. It lives in this machine's
@@ -14,8 +14,8 @@ import { Button, Toggle } from "./ui";
  * sees the last few characters back.
  */
 export function ApiKeyPanel({ compact = false }: { compact?: boolean }) {
-  const ai = useMimic((s) => s.ai);
-  const stats = useMimic((s) => s.stats);
+  const ai = useDoppel((s) => s.ai);
+  const stats = useDoppel((s) => s.stats);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function ApiKeyPanel({ compact = false }: { compact?: boolean }) {
   const save = async () => {
     setBusy(true);
     setError(null);
-    const result = await mimic.setApiKey(draft);
+    const result = await doppel.setApiKey(draft);
     setBusy(false);
     if (result?.ok) setDraft("");
     else setError(result?.detail ?? "That didn't work.");
@@ -48,7 +48,7 @@ export function ApiKeyPanel({ compact = false }: { compact?: boolean }) {
             {ai.fromEnvironment ? voice.mind.keyFromEnv : voice.mind.keyGood(ai.hint)}
           </p>
           {!ai.fromEnvironment && (
-            <Button variant="ghost" size="sm" onClick={() => mimic.clearApiKey()}>
+            <Button variant="ghost" size="sm" onClick={() => doppel.clearApiKey()}>
               {voice.mind.keyClear}
             </Button>
           )}
@@ -102,7 +102,7 @@ export function ApiKeyPanel({ compact = false }: { compact?: boolean }) {
             </div>
             <Toggle
               checked={ai.autoWatch}
-              onChange={(on) => mimic.setAutoWatch(on)}
+              onChange={(on) => doppel.setAutoWatch(on)}
               label="Look on my own"
             />
           </div>
@@ -116,7 +116,7 @@ export function ApiKeyPanel({ compact = false }: { compact?: boolean }) {
                 return (
                   <button
                     key={level}
-                    onClick={() => mimic.setDetail(level)}
+                    onClick={() => doppel.setDetail(level)}
                     className="pressable cursor-pointer"
                     style={{
                       padding: "10px 18px",

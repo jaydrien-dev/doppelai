@@ -12,7 +12,7 @@ const figtree = Figtree({
 });
 
 export const metadata: Metadata = {
-  title: "Mimic",
+  title: "Doppel",
   description: "It watches how you work, learns the repeats, and takes them over.",
 };
 

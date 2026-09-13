@@ -29,7 +29,7 @@ export function Pulse({
         className="absolute inset-0 rounded-full"
         style={{
           background: `radial-gradient(circle, ${colour} 0%, transparent 68%)`,
-          animation: paused ? "none" : `mimic-breathe var(--pulse-cycle) var(--ease-calm) infinite`,
+          animation: paused ? "none" : `doppel-breathe var(--pulse-cycle) var(--ease-calm) infinite`,
           opacity: paused ? 0.32 : undefined,
         }}
       />
@@ -42,8 +42,7 @@ export function Pulse({
           background: `radial-gradient(circle, ${colour} 0%, transparent 70%)`,
           animation: paused
             ? "none"
-            : `mimic-breathe calc(var(--pulse-cycle) * 1.35) var(--ease-calm) infinite`,
-          animationDelay: "-1.2s",
+            : `doppel-breathe calc(var(--pulse-cycle) * 1.35) var(--ease-calm) -1.2s infinite`,
           opacity: paused ? 0.24 : undefined,
         }}
       />

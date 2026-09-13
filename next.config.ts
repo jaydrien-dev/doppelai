@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 /**
- * Mimic ships as an Electron application, so the web layer is exported to
+ * Doppel ships as an Electron application, so the web layer is exported to
  * static files and served over a private app:// protocol. That rules out
  * server-rendered dynamic segments — routine and run screens take their id
  * from the query string instead.

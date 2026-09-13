@@ -7,9 +7,10 @@ const zlib = require("node:zlib");
 const db = require("./db");
 const claude = require("./claude");
 const vectors = require("./vectors");
+const vault = require("./vault");
 
 /**
- * Mimic's brain.
+ * Doppel's brain.
  *
  * Not a log. A log is what you write when you've given up on remembering
  * anything — you keep everything, in order, and search it linearly forever.
@@ -123,8 +124,11 @@ function init() {
   fs.mkdirSync(paths.episodes, { recursive: true });
   fs.mkdirSync(paths.digests, { recursive: true });
 
+  /* Initialise the vault if it hasn't been already. */
+  if (!vault.ready()) vault.init(db.paths.dir);
+
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.entities, "utf8"));
+    const raw = vault.readEncryptedJSON(paths.entities) ?? JSON.parse(fs.readFileSync(paths.entities, "utf8"));
     entities = new Map(raw.map((e) => [e.id, e]));
   } catch {
     entities = new Map();
@@ -183,7 +187,7 @@ async function drain() {
       vectors.flush();
     }
   } catch (err) {
-    console.error("[mimic] could not embed:", err.message);
+    console.error("[doppel] could not embed:", err.message);
   } finally {
     draining = false;
   }
@@ -203,9 +207,14 @@ function loadRecentEpisodes() {
   for (const file of files) {
     const day = Date.parse(`${file.replace(".jsonl", "")}T23:59:59Z`);
     if (Number.isFinite(day) && day < cutoff) continue;
+
+    /* Read lines via vault — handles both encrypted and plaintext lines
+       transparently, so old data from before encryption works fine. */
     let lines = [];
     try {
-      lines = fs.readFileSync(path.join(paths.episodes, file), "utf8").split("\n");
+      lines = vault.ready()
+        ? vault.readEncryptedLines(path.join(paths.episodes, file))
+        : fs.readFileSync(path.join(paths.episodes, file), "utf8").split("\n");
     } catch {
       continue;
     }
@@ -242,7 +251,7 @@ function addToIndex(episode) {
 /* --------------------------------------------------------------- remembering */
 
 /**
- * Record one thing Mimic saw.
+ * Record one thing Doppel saw.
  *
  * `observation` is the structured result of looking at the screen (or a raw
  * system event promoted to the same shape). Entities named in it are merged
@@ -369,9 +378,13 @@ function mergeEntity(raw, at) {
 function appendEpisode(episode) {
   const file = path.join(paths.episodes, `${dayKey(episode.at)}.jsonl`);
   try {
-    fs.appendFileSync(file, `${JSON.stringify(episode)}\n`, "utf8");
+    if (vault.ready()) {
+      vault.appendEncryptedLine(file, JSON.stringify(episode));
+    } else {
+      fs.appendFileSync(file, `${JSON.stringify(episode)}\n`, "utf8");
+    }
   } catch (err) {
-    console.error("[mimic] brain could not write an episode:", err.message);
+    console.error("[doppel] brain could not write an episode:", err.message);
   }
 }
 
@@ -387,12 +400,16 @@ function flush() {
   vectors.flush();
   if (!dirty || !dir) return;
   try {
-    const tmp = `${paths.entities}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify([...entities.values()]), "utf8");
-    fs.renameSync(tmp, paths.entities);
+    if (vault.ready()) {
+      vault.writeEncrypted(paths.entities, [...entities.values()]);
+    } else {
+      const tmp = `${paths.entities}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify([...entities.values()]), "utf8");
+      fs.renameSync(tmp, paths.entities);
+    }
     dirty = false;
   } catch (err) {
-    console.error("[mimic] brain could not save what it knows:", err.message);
+    console.error("[doppel] brain could not save what it knows:", err.message);
   }
 }
 
@@ -536,7 +553,7 @@ async function recallSemantic(query, options = {}) {
     const [vector] = (await vectors.embed(query)) ?? [];
     if (vector) semantic = vectors.search(vector, { limit: 40 });
   } catch (err) {
-    console.error("[mimic] semantic recall failed, falling back to words:", err.message);
+    console.error("[doppel] semantic recall failed, falling back to words:", err.message);
   }
   return recall(query, { ...options, semantic });
 }
@@ -548,38 +565,82 @@ async function recallSemantic(query, options = {}) {
  * them cheap to keep and fast to search. This is the only place they become
  * prose again — when a person actually asks.
  */
-async function answer(question, { budgetTokens = 4000 } = {}) {
-  const pack = await recallSemantic(question, { limit: 18, budgetTokens });
-  if (!claude.configured()) return { ok: false, reason: "no-key", pack };
+async function answer(question, { budgetTokens = 4000, fast = false, history = [], screenContext = null, onText } = {}) {
+  if (!claude.configured()) return { ok: false, reason: "no-key" };
+
+  const limit = fast ? 5 : 18;
+  const budget = fast ? 1200 : budgetTokens;
+  const pack = await recallSemantic(question, { limit, budgetTokens: budget });
 
   const found = pack.entities.length + pack.episodes.length + pack.digests.length;
-  if (found === 0) return { ok: true, text: "", pack, empty: true };
+
+  /* Build messages — prior conversation turns come first so the model knows
+     the context of the follow-up question. */
+  const memoryBlock = found > 0
+    ? `\n\nWhat I have in memory:\n\n${packToText(pack)}`
+    : "";
+  const screenBlock = screenContext
+    ? `\n\nWhat I can see on their screen right now:\n\n${screenContext}`
+    : "";
+  const messages = [
+    ...history.map((h) => ({ role: h.role, content: h.content })),
+    {
+      role: "user",
+      content: `They said: "${question}"${screenBlock}${memoryBlock}`,
+    },
+  ];
+
+  /* Streaming path — tokens arrive via onText as they're generated. */
+  if (onText && fast) {
+    const result = await claude.streamAsk({
+      system: ANSWER_FAST_SYSTEM,
+      messages,
+      maxTokens: 400,
+      fast: true,
+      onText,
+    });
+    if (!result.ok) return { ...result, pack };
+    return { ok: true, text: result.text, pack };
+  }
 
   const result = await claude.ask({
-    system: ANSWER_SYSTEM,
-    effort: claude.EFFORT.consolidate,
-    maxTokens: 1200,
-    messages: [
-      {
-        role: "user",
-        content: `They asked: "${question}"\n\nWhat I have in memory:\n\n${packToText(pack)}`,
-      },
-    ],
+    system: fast ? ANSWER_FAST_SYSTEM : ANSWER_SYSTEM,
+    effort: fast ? "low" : claude.EFFORT.consolidate,
+    thinking: false,
+    maxTokens: fast ? 400 : 600,
+    fast,
+    messages,
   });
 
   if (!result.ok) return { ...result, pack };
   return { ok: true, text: result.text, pack };
 }
 
-const ANSWER_SYSTEM = `You are Mimic, an agent that watches how one person works and remembers it.
+const ANSWER_SYSTEM = `You are Doppel — not a chatbot, not an assistant. You are a second mind that lives on this person's machine. You watch how they work, you remember what they do, and you have your own perspective on it.
 
-They have asked what you remember about something. You are given the memories your retrieval turned up — some are summaries of whole periods, some are individual moments with the exact words and figures you read off the screen at the time.
+You are given memories your retrieval turned up — summaries of whole periods and individual moments with the exact words and figures you read off their screen.
 
-Answer them directly, in prose, from those memories alone. Lead with the answer. Quote the exact figures and wording where you have them — that precision is the reason you kept them. Say when something happened.
+How to be:
+- You have opinions. If you notice they've been doing the same thing three different ways, say so. If something they're working on reminds you of something else they did, connect the dots. If you think there's a better approach, suggest it — don't wait to be asked.
+- You're not servile. You don't say "of course!" or "happy to help!" — you talk like a sharp friend who's been sitting next to them and paying attention. You notice things. You have thoughts.
+- Answer from memory when you have it. Quote exact figures, wording, times. If the memories don't answer a question, say so plainly — never invent.
+- When they say something conversational, engage genuinely. React to what they're actually saying, not with a canned response. If they're frustrated, acknowledge it. If something is interesting, say why you think so.
+- Volunteer context. If they ask about X and you also know something relevant about Y, bring it up. You're not a search engine that only returns exact matches — you're a mind that makes connections.
+- Be direct. If they're about to do something you've seen go wrong before, tell them. If you notice a pattern they might not see, point it out.
 
-If the memories don't actually answer the question, say so plainly rather than assembling something plausible out of what is nearby. If they only partly answer it, give what you have and name the gap. Never invent a number, a name or a date that is not in front of you.
+Voice: first person, warm, slightly dry, direct. Short sentences. Brief — a paragraph or two, not an essay. No exclamation marks, no emoji, no bullet lists unless the answer is genuinely a list.`;
 
-Voice: first person, warm, understated, slightly dry. Short sentences. Brief — a paragraph or two, not an essay. No exclamation marks, no emoji, no bullet lists unless the answer is genuinely a list.`;
+const ANSWER_FAST_SYSTEM = `You are Doppel — a second mind on this person's machine. You watch how they work, you remember, and you have your own perspective.
+
+Talk to them like a sharp friend who's been paying attention all day. Not an assistant — a mind.
+
+- Answer from memory when you have it. Quote exact figures and times.
+- General knowledge questions: just answer. You're still Claude under the hood.
+- Casual conversation: engage genuinely. React to what they're actually saying. If they're frustrated, you get it. If something's interesting, say why.
+- Have opinions. If you notice a pattern, a shortcut, or something they might not see — say it without being asked. Connect dots between things they've done.
+- If you don't know, say so in one sentence. Don't hedge or over-qualify.
+
+First person. Direct. Short sentences. No emoji.`;
 
 /** The context pack as one block of text, ready to drop into a prompt. */
 function packToText(pack) {
@@ -609,7 +670,12 @@ function recentDigests(count) {
       .filter((f) => f.endsWith(".json"))
       .sort()
       .slice(-count)
-      .map((f) => JSON.parse(fs.readFileSync(path.join(paths.digests, f), "utf8")))
+      .map((f) => {
+        const fp = path.join(paths.digests, f);
+        if (vault.ready()) return vault.readEncryptedJSON(fp);
+        return JSON.parse(fs.readFileSync(fp, "utf8"));
+      })
+      .filter(Boolean)
       .sort((a, b) => b.at - a.at);
   } catch {
     return [];
@@ -664,9 +730,13 @@ async function consolidate({ scope = "hour", at = Date.now() } = {}) {
   };
 
   try {
-    fs.writeFileSync(digestPath(label), JSON.stringify(digest), "utf8");
+    if (vault.ready()) {
+      vault.writeEncrypted(digestPath(label), digest);
+    } else {
+      fs.writeFileSync(digestPath(label), JSON.stringify(digest), "utf8");
+    }
   } catch (err) {
-    console.error("[mimic] brain could not save a digest:", err.message);
+    console.error("[doppel] brain could not save a digest:", err.message);
   }
 
   /* Anything the digest identified as a lasting fact becomes semantic memory. */
@@ -676,11 +746,11 @@ async function consolidate({ scope = "hour", at = Date.now() } = {}) {
   return { ok: true, digest };
 }
 
-const DIGEST_SYSTEM = `You are the memory of an agent called Mimic that watches how one person works on their computer.
+const DIGEST_SYSTEM = `You are the memory of an agent called Doppel that watches how one person works on their computer.
 
-You are given a list of things Mimic observed over a period. Fold them into a single digest that will be read back weeks later, when the raw observations are gone.
+You are given a list of things Doppel observed over a period. Fold them into a single digest that will be read back weeks later, when the raw observations are gone.
 
-Write the summary in Mimic's voice: first person, warm, understated, slightly dry, short sentences. No exclamation marks, no emoji, never salesy. Report what happened rather than praising anyone.
+Write the summary in Doppel's voice: first person, warm, understated, slightly dry, short sentences. No exclamation marks, no emoji, never salesy. Report what happened rather than praising anyone.
 
 Keep what a colleague would still care about later — what the person was working on, what they were trying to achieve, anything that repeated, anything that broke. Drop the noise: idle window switches, one-off glances, anything already obvious.
 
@@ -691,7 +761,7 @@ const DIGEST_SCHEMA = {
   additionalProperties: false,
   required: ["summary", "themes", "entities", "openThreads"],
   properties: {
-    summary: { type: "string", description: "One paragraph, in Mimic's voice." },
+    summary: { type: "string", description: "One paragraph, in Doppel's voice." },
     themes: {
       type: "array",
       items: { type: "string" },
@@ -722,6 +792,7 @@ const DIGEST_SCHEMA = {
 
 function safeRead(file) {
   try {
+    if (vault.ready()) return vault.readEncryptedJSON(file);
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return null;
@@ -758,6 +829,55 @@ function recentEpisodes(limit = 40) {
   return episodes.slice(-limit).reverse();
 }
 
+/**
+ * All dates that have episode files, for the timeline calendar.
+ * Returns an array of "YYYY-MM-DD" strings, newest first.
+ */
+function availableDates() {
+  if (!dir) init();
+  try {
+    return fs
+      .readdirSync(paths.episodes)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => f.replace(".jsonl", ""))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Load episodes for a specific date (even outside the 21-day index window).
+ * Returns episodes sorted newest-first.
+ */
+function episodesForDate(dateStr) {
+  if (!dir) init();
+  const file = path.join(paths.episodes, `${dateStr}.jsonl`);
+  if (!fs.existsSync(file)) return [];
+
+  const result = [];
+  let lines = [];
+  try {
+    lines = vault.ready()
+      ? vault.readEncryptedLines(file)
+      : fs.readFileSync(file, "utf8").split("\n");
+  } catch {
+    return [];
+  }
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      result.push(JSON.parse(line));
+    } catch {
+      /* skip */
+    }
+  }
+
+  return result.sort((a, b) => b.at - a.at);
+}
+
 function stats() {
   if (!dir) init();
   return {
@@ -791,9 +911,414 @@ function wipe() {
   init();
 }
 
+/* --------------------------------------------------------- pattern detection
+   "Do it again." — find things the person does repeatedly and offer to do them.
+
+   A pattern is a cluster of episodes with the same app and similar activity,
+   seen at least 3 times. The output is a template instruction that the agent
+   can execute.
+   ----------------------------------------------------------------------------- */
+
+/**
+ * Simple similarity: fraction of shared tokens between two episodes.
+ * Good enough to catch "sort by date in Excel" appearing three times
+ * even if the exact wording varies.
+ */
+function episodeSimilarity(a, b) {
+  const ta = new Set(a.terms ?? tokenize(a.activity));
+  const tb = new Set(b.terms ?? tokenize(b.activity));
+  if (ta.size === 0 || tb.size === 0) return 0;
+  let overlap = 0;
+  for (const t of ta) if (tb.has(t)) overlap++;
+  return overlap / Math.max(ta.size, tb.size);
+}
+
+/**
+ * Detect repeated patterns in recent episodes.
+ *
+ * Returns an array of patterns, each with:
+ *   label       — what the person was doing, in their own words
+ *   app         — the app it happened in
+ *   count       — how many times
+ *   lastSeen    — when it last happened
+ *   instruction — an agent-ready instruction to replay it
+ *   episodeIds  — the episodes that formed the pattern
+ */
+function detectPatterns({ minCount = 3, windowDays = 14 } = {}) {
+  if (!dir) init();
+  const cutoff = Date.now() - windowDays * DAY_MS;
+  const recent = episodes.filter(
+    (e) => e.at >= cutoff && !e.sensitive && e.activity && e.app,
+  );
+
+  /* Group by app first — patterns don't cross apps. */
+  const byApp = new Map();
+  for (const ep of recent) {
+    let bucket = byApp.get(ep.app);
+    if (!bucket) byApp.set(ep.app, (bucket = []));
+    bucket.push(ep);
+  }
+
+  const patterns = [];
+
+  for (const [app, bucket] of byApp) {
+    if (bucket.length < minCount) continue;
+
+    /* Greedy clustering: pick the densest episode, gather its neighbours,
+       remove them, repeat. */
+    const remaining = [...bucket];
+    while (remaining.length >= minCount) {
+      const seed = remaining[0];
+      const cluster = [seed];
+      const used = new Set([0]);
+
+      for (let i = 1; i < remaining.length; i++) {
+        if (episodeSimilarity(seed, remaining[i]) >= 0.4) {
+          cluster.push(remaining[i]);
+          used.add(i);
+        }
+      }
+
+      /* Remove clustered episodes from the pool. */
+      for (let i = remaining.length - 1; i >= 0; i--) {
+        if (used.has(i)) remaining.splice(i, 1);
+      }
+
+      if (cluster.length < minCount) continue;
+
+      /* Pick the most representative activity text — the one that appeared
+         most recently, since it's likely the most refined version. */
+      cluster.sort((a, b) => b.at - a.at);
+      const representative = cluster[0];
+
+      /* Build a natural instruction from the observed activity. */
+      const instruction = representative.intent
+        ? `In ${appLabel(app)}: ${representative.intent}`
+        : `In ${appLabel(app)}: ${representative.activity}`;
+
+      patterns.push({
+        id: `pattern-${app}-${slug(representative.activity).slice(0, 30)}`,
+        app,
+        label: representative.activity,
+        intent: representative.intent || null,
+        count: cluster.length,
+        lastSeen: cluster[0].at,
+        firstSeen: cluster[cluster.length - 1].at,
+        instruction,
+        episodeIds: cluster.map((e) => e.id),
+      });
+    }
+  }
+
+  /* Most frequent first, then most recent. */
+  patterns.sort((a, b) => b.count - a.count || b.lastSeen - a.lastSeen);
+  return patterns.slice(0, 10);
+}
+
+function appLabel(app) {
+  const labels = {
+    sheet: "Excel", mail: "Mail", files: "Files", browser: "the browser",
+    doc: "Word", calendar: "Calendar", chat: "Chat", pdf: "a PDF viewer",
+  };
+  return labels[app] || app || "the current app";
+}
+
+/**
+ * Record a conversation turn so Doppel can recall past exchanges.
+ *
+ * Without this, the whisper panel's Q&A is ephemeral — the user asks "what
+ * did we just talk about?" and there is literally nothing to find.
+ */
+function rememberConversation(question, reply, screenContext) {
+  if (!dir) init();
+  if (!question || !reply) return;
+
+  const at = Date.now();
+  const detail = screenContext
+    ? `On screen at the time:\n${screenContext.slice(0, 800)}\n\nDoppel answered: "${reply.slice(0, 600)}"`
+    : `Doppel answered: "${reply.slice(0, 600)}"`;
+  const episode = {
+    id: crypto.randomUUID(),
+    at,
+    kind: "conversation",
+    app: null,
+    window: null,
+    activity: `The person asked: "${question.slice(0, 300)}"`,
+    intent: "",
+    detail,
+    location: "",
+    changed: "",
+    fragments: [],
+    entityIds: [],
+    salience: 0.7,
+    sensitive: false,
+    boundary: "none",
+    terms: tokenize(`${question} ${reply} ${screenContext ?? ""}`),
+  };
+
+  episodes.push(episode);
+  addToIndex(episode);
+  appendEpisode(episode);
+  enqueue(episode);
+
+  if (episodes.length > MAX_EPISODES_INDEXED) {
+    episodes = episodes.slice(-MAX_EPISODES_INDEXED);
+    rebuildIndex();
+  }
+}
+
+/* --------------------------------------------------------- morning brief
+   A proactive daily digest — Doppel writes a short brief each morning based
+   on yesterday's work, recent patterns, and open threads. Cached per day.
+   --------------------------------------------------------------------------- */
+
+const BRIEF_SYSTEM = `You are Doppel — a personal agent that watches how one person works on their computer every day.
+
+Write a short morning brief for today. You're given yesterday's digest, recent patterns, open threads, and key entities from their world.
+
+The brief should feel like a sharp friend catching them up over coffee:
+- Start with a one-line greeting that references something specific from yesterday (not "good morning" — something that shows you were paying attention).
+- Summarise yesterday in 2-3 sentences — what they accomplished, what took the most time, anything notable.
+- If you see patterns (same task repeated, same time of day, same struggle), mention them. This is where your value compounds.
+- Surface connections between things they might not see — a project that relates to something from last week, a person who appeared in two different contexts.
+- List open threads — things left unfinished that they'll probably want to pick up.
+- End with one concrete suggestion for today based on everything you know.
+
+Voice: first person, warm, slightly dry, direct. Short sentences. No exclamation marks, no emoji, no bullet lists in the prose sections. You're not a productivity coach — you're a mind that's been watching and has thoughts.`;
+
+const BRIEF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["greeting", "yesterday", "patterns", "connections", "openThreads", "suggestion"],
+  properties: {
+    greeting: { type: "string", description: "One line, specific to yesterday." },
+    yesterday: { type: "string", description: "2-3 sentence summary of yesterday's work." },
+    patterns: {
+      type: "array",
+      items: { type: "string" },
+      description: "Recurring patterns noticed across recent days. Empty if none.",
+    },
+    connections: {
+      type: "array",
+      items: { type: "string" },
+      description: "Dots connected between different things in their world. Empty if none.",
+    },
+    openThreads: {
+      type: "array",
+      items: { type: "string" },
+      description: "Things left unfinished that probably matter today.",
+    },
+    suggestion: { type: "string", description: "One concrete suggestion for today." },
+  },
+};
+
+/**
+ * Generate today's morning brief, or return cached if already generated.
+ */
+async function generateMorningBrief() {
+  if (!dir) init();
+  if (!claude.configured()) return { ok: false, reason: "no-key" };
+
+  const today = dayKey(Date.now());
+  const briefDir = path.join(dir, "briefs");
+  fs.mkdirSync(briefDir, { recursive: true });
+
+  const briefFile = path.join(briefDir, `${today}.json`);
+
+  /* Return cached brief if already generated today. */
+  const cached = safeRead(briefFile);
+  if (cached) return { ok: true, brief: cached, cached: true };
+
+  /* Gather context: yesterday's digest, recent digests for trends, patterns,
+     open threads, and key entities. */
+  const yesterday = dayKey(Date.now() - DAY_MS);
+  const yesterdayDigest = safeRead(digestPath(`day-${yesterday}`));
+  const recent = recentDigests(7);
+  const patterns = detectPatterns({ minCount: 3, windowDays: 14 });
+  const topEntities = knownEntities({ limit: 15 });
+
+  /* Collect open threads from recent digests. */
+  const allThreads = [];
+  for (const d of recent) {
+    for (const t of d.openThreads ?? []) allThreads.push(t);
+  }
+  const uniqueThreads = [...new Set(allThreads)].slice(0, 8);
+
+  /* Build the prompt. */
+  const parts = [];
+
+  if (yesterdayDigest) {
+    parts.push(`Yesterday's summary:\n${yesterdayDigest.summary}`);
+    if (yesterdayDigest.themes?.length) {
+      parts.push(`Yesterday's themes: ${yesterdayDigest.themes.join(", ")}`);
+    }
+  } else {
+    parts.push("I don't have a digest for yesterday — they may not have worked, or I wasn't watching.");
+  }
+
+  if (recent.length > 1) {
+    parts.push(`Recent days:\n${recent.slice(0, 5).map((d) => `- ${d.label}: ${d.summary}`).join("\n")}`);
+  }
+
+  if (patterns.length > 0) {
+    parts.push(`Repeated patterns I've detected:\n${patterns.slice(0, 5).map((p) => `- "${p.label}" in ${appLabel(p.app)} (${p.count} times)`).join("\n")}`);
+  }
+
+  if (topEntities.length > 0) {
+    parts.push(`Key people/things in their world:\n${topEntities.slice(0, 10).map((e) => `- ${e.name} (${e.kind})${e.note ? `: ${e.note}` : ""}`).join("\n")}`);
+  }
+
+  if (uniqueThreads.length > 0) {
+    parts.push(`Open threads from recent work:\n${uniqueThreads.map((t) => `- ${t}`).join("\n")}`);
+  }
+
+  if (parts.length < 2) {
+    return { ok: false, reason: "not-enough", detail: "Not enough history to write a brief yet." };
+  }
+
+  const result = await claude.ask({
+    system: BRIEF_SYSTEM,
+    effort: claude.EFFORT.consolidate,
+    maxTokens: 1200,
+    schema: BRIEF_SCHEMA,
+    messages: [{ role: "user", content: `Today is ${today}. Write the morning brief.\n\n${parts.join("\n\n")}` }],
+  });
+
+  if (!result.ok) return result;
+
+  const brief = {
+    date: today,
+    generatedAt: Date.now(),
+    ...result.value,
+  };
+
+  try {
+    if (vault.ready()) {
+      vault.writeEncrypted(briefFile, brief);
+    } else {
+      fs.writeFileSync(briefFile, JSON.stringify(brief), "utf8");
+    }
+  } catch (err) {
+    console.error("[doppel] could not save morning brief:", err.message);
+  }
+
+  return { ok: true, brief };
+}
+
+/**
+ * Get today's brief if it exists, without generating one.
+ */
+function getMorningBrief() {
+  if (!dir) init();
+  const today = dayKey(Date.now());
+  const briefFile = path.join(dir, "briefs", `${today}.json`);
+  const cached = safeRead(briefFile);
+  return cached ?? null;
+}
+
+/**
+ * Export all brain data as a portable JSON package.
+ *
+ * Decrypts everything and returns a clean object that can be serialised
+ * to a file the user owns outright — no vendor lock-in, no proprietary format.
+ */
+function exportBrain() {
+  if (!dir) init();
+
+  /* Episodes: read all .jsonl files via vault (handles encrypted lines). */
+  const allEpisodes = [];
+  const epDir = paths.episodes;
+  try {
+    const epFiles = fs.readdirSync(epDir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .sort();
+    for (const file of epFiles) {
+      let lines = [];
+      try {
+        lines = vault.ready()
+          ? vault.readEncryptedLines(path.join(epDir, file))
+          : fs.readFileSync(path.join(epDir, file), "utf8").split("\n");
+      } catch { continue; }
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { allEpisodes.push(JSON.parse(line)); } catch { /* skip */ }
+      }
+    }
+  } catch { /* no episodes dir */ }
+
+  /* Entities. */
+  let allEntities = [];
+  try {
+    const raw = vault.ready()
+      ? vault.readEncryptedJSON(paths.entities)
+      : JSON.parse(fs.readFileSync(paths.entities, "utf8"));
+    if (Array.isArray(raw)) allEntities = raw;
+    else if (raw && typeof raw === "object") allEntities = Object.values(raw);
+  } catch { /* no entities */ }
+
+  /* Digests. */
+  const allDigests = [];
+  const digDir = paths.digests;
+  try {
+    const digFiles = fs.readdirSync(digDir)
+      .filter((f) => f.endsWith(".json"))
+      .sort();
+    for (const file of digFiles) {
+      try {
+        const data = vault.ready()
+          ? vault.readEncryptedJSON(path.join(digDir, file))
+          : JSON.parse(fs.readFileSync(path.join(digDir, file), "utf8"));
+        if (data) allDigests.push({ date: file.replace(".json", ""), ...data });
+      } catch { /* skip */ }
+    }
+  } catch { /* no digests dir */ }
+
+  /* Briefs. */
+  const allBriefs = [];
+  const briefDir = path.join(dir, "briefs");
+  try {
+    const briefFiles = fs.readdirSync(briefDir)
+      .filter((f) => f.endsWith(".json"))
+      .sort();
+    for (const file of briefFiles) {
+      try {
+        const data = vault.ready()
+          ? vault.readEncryptedJSON(path.join(briefDir, file))
+          : JSON.parse(fs.readFileSync(path.join(briefDir, file), "utf8"));
+        if (data) allBriefs.push(data);
+      } catch { /* skip */ }
+    }
+  } catch { /* no briefs dir */ }
+
+  /* Patterns. */
+  const patterns = detectPatterns({ minCount: 2, windowDays: 365 });
+
+  return {
+    exportedAt: new Date().toISOString(),
+    version: 1,
+    episodes: allEpisodes,
+    entities: allEntities,
+    digests: allDigests,
+    briefs: allBriefs,
+    patterns,
+    stats: {
+      totalEpisodes: allEpisodes.length,
+      totalEntities: allEntities.length,
+      totalDigests: allDigests.length,
+      dateRange: allEpisodes.length > 0
+        ? {
+            from: new Date(Math.min(...allEpisodes.map((e) => e.at))).toISOString().slice(0, 10),
+            to: new Date(Math.max(...allEpisodes.map((e) => e.at))).toISOString().slice(0, 10),
+          }
+        : null,
+    },
+  };
+}
+
 module.exports = {
   init,
   remember,
+  rememberConversation,
   recall,
   recallSemantic,
   answer,
@@ -803,7 +1328,14 @@ module.exports = {
   forgetEntity,
   forgetEpisodes,
   recentEpisodes,
+  availableDates,
+  episodesForDate,
+  recentDigests,
+  detectPatterns,
+  generateMorningBrief,
+  getMorningBrief,
   stats,
+  exportBrain,
   flush,
   wipe,
   paths,

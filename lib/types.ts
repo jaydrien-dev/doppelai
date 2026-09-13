@@ -1,19 +1,6 @@
 /* ===========================================================================
-   Mimic — the shapes the main process actually produces.
-
-   Nothing here is invented for the interface. Routines are mined from real
-   observations, steps carry real actions, and runs record what really changed.
+   Doppel — the shapes the main process actually produces.
    =========================================================================== */
-
-export type Stage = "learning" | "ready" | "supervised" | "trusted" | "unattended";
-
-export const STAGE_ORDER: Stage[] = [
-  "learning",
-  "ready",
-  "supervised",
-  "trusted",
-  "unattended",
-];
 
 /** The glyph shown beside a step. Derived from the app or the file type. */
 export type AppId =
@@ -25,221 +12,6 @@ export type AppId =
   | "calendar"
   | "chat"
   | "pdf";
-
-export type Certainty = "sure" | "guessing";
-
-/** Everything Mimic can genuinely carry out. */
-export type ActionKind =
-  | "move"
-  | "rename"
-  | "copy"
-  | "trash"
-  | "zip"
-  | "mkdir"
-  | "open"
-  | "await-file"
-  | "activate"
-  | "click"
-  | "type"
-  | "hotkey"
-  | "wait"
-  | "none";
-
-export interface StepAction {
-  kind: ActionKind;
-  dir?: string;
-  from?: string;
-  to?: string;
-  file?: string;
-  match?: string;
-  example?: string;
-  text?: string;
-  keys?: string;
-  x?: number;
-  y?: number;
-  ms?: number;
-  app?: string;
-}
-
-/** Reasons Mimic stops and asks, whatever it has been trusted with. */
-export type HardRuleKind = "delete" | "irreversible" | "outside" | "gui" | "files" | "unknown";
-
-export const HARD_RULE_LABEL: Record<HardRuleKind, string> = {
-  delete: "clears something away",
-  irreversible: "cannot be undone",
-  outside: "is outside the folders you allow",
-  gui: "drives another application",
-  files: "changes files",
-  unknown: "is something I don't understand",
-};
-
-export interface StepParam {
-  label: string;
-  value: string;
-  options: string[];
-}
-
-export interface RoutineStep {
-  id: string;
-  /** The signature fragment that makes two sessions the same piece of work. */
-  key: string;
-  label: string;
-  detail: string;
-  app: AppId;
-  certainty: Certainty;
-  duration: number;
-  action: StepAction;
-  hardRule?: HardRuleKind;
-  param?: StepParam;
-}
-
-export interface ObservedPath {
-  id: string;
-  label: string;
-  seenCount: number;
-  lastSeen: number;
-  stepIds: string[];
-}
-
-export interface Lesson {
-  id: string;
-  stepId: string;
-  stepLabel: string;
-  lesson: string;
-  at: number;
-  runIndex: number;
-  kind: "correction" | "answer" | "rule";
-}
-
-export type RunOutcome = "clean" | "corrected" | "stopped" | "autonomous";
-
-export interface Reasoning {
-  saw: string;
-  inferred: string;
-  applied?: string;
-}
-
-export interface RunRecord {
-  id: string;
-  routineId: string;
-  routineTitle: string;
-  at: number;
-  durationSec: number;
-  corrections: number;
-  outcome: RunOutcome;
-  note: string;
-  minutesSaved: number;
-  supervised: boolean;
-  unattended: boolean;
-  reasoning: Reasoning;
-  steps: { label: string; state: StepState }[];
-  /** What genuinely changed on disk. */
-  changes: string[];
-  reversible: boolean;
-  rolledBack: boolean;
-  rollbackNote?: string;
-  recording: boolean;
-}
-
-export interface Routine {
-  id: string;
-  /** The identity of this piece of work, order ignored. */
-  shape: string;
-  title: string;
-  intent: string;
-  successCriteria: string[];
-  source: string;
-  hunch: string;
-  unsure?: string;
-
-  stage: Stage;
-  confidence: number;
-  observations: number;
-
-  stepLibrary: RoutineStep[];
-  observedPaths: ObservedPath[];
-
-  lessons: Lesson[];
-  confidenceHistory: { at: number; value: number }[];
-
-  provingRunsRequired: number;
-  provingRunsPassed: number;
-  presentRunsRequired: number;
-  presentRunsPassed: number;
-
-  lastRunAt?: number;
-  minutesPerRun: number;
-  discoveredAt: number;
-
-  order: string[];
-  skipped: string[];
-  overrides?: Record<string, { match?: string; pattern?: string }>;
-
-  recentOutcomes: RunOutcome[];
-  drifting: boolean;
-  relearning: boolean;
-
-  quarantined: boolean;
-  sharedFrom?: string;
-  taughtDirectly: boolean;
-  taughtWeight: number;
-}
-
-export type StepState =
-  | "pending"
-  | "active"
-  | "done"
-  | "skipped"
-  | "corrected"
-  | "parked"
-  | "unreached";
-
-export type RunStatus =
-  | "running"
-  | "paused"
-  | "correcting"
-  | "parked"
-  | "yielded"
-  | "stopped"
-  | "finished";
-
-export interface RunSummary {
-  outcome: RunOutcome;
-  note: string;
-  durationSec: number;
-  corrections: number;
-  minutesSaved: number;
-  changes: string[];
-  completed: string[];
-  notCompleted: string[];
-  runId: string;
-  earned?: boolean;
-}
-
-export interface ActiveRun {
-  id: string;
-  routineId: string;
-  routineTitle: string;
-  runIndex: number;
-  stepIndex: number;
-  status: RunStatus;
-  stepStates: Record<string, StepState>;
-  /** What each finished step actually did, in its own words. */
-  stepDetails: Record<string, string>;
-  order: string[];
-  skipped: string[];
-  correctionsThisRun: Lesson[];
-  startedAt: number;
-  elapsedSec: number;
-  changes: string[];
-  irreversible: boolean;
-  parkedReason: string | null;
-  parkedRule: HardRuleKind | null;
-  supervised: boolean;
-  unattended: boolean;
-  dispatchedFrom: "desk" | "pocket";
-  summary: RunSummary | null;
-}
 
 /* --------------------------------------------------------------------------
    Observation
@@ -293,6 +65,9 @@ export interface AiState {
   /** How closely it reads a screen — every word, or just the gist. */
   detail: "light" | "thorough";
   hint: string;
+  /** OpenAI Whisper transcription. */
+  openaiConfigured: boolean;
+  openaiHint: string;
 }
 
 /* --------------------------------------------------------------------------
@@ -337,6 +112,14 @@ export interface OverlayState {
   position: { x: number; y: number } | null;
 }
 
+/** The voice hotkey panel. */
+export interface WhisperState {
+  enabled: boolean;
+  hotkey: string;
+  position: { x: number; y: number } | null;
+  autoDismiss: number;
+}
+
 /** One exact thing read off the screen — a quote or a figure. */
 export interface Fragment {
   kind: "text" | "figure";
@@ -344,16 +127,20 @@ export interface Fragment {
   value: string;
 }
 
-/** One thing Mimic said about what it saw. */
+/** One thing Doppel said about what it saw. */
 export interface NarrationLine {
   id: string;
   at: number;
   app: string | null;
   text: string;
   intent: string;
+  /** When the same intent moves to a different place, Doppel says so. */
+  adaptation: string | null;
   salience: number;
   sensitive: boolean;
   reason: string;
+  /** True when this is a "welcome back" context recovery line. */
+  recovery?: boolean;
 }
 
 /* --------------------------------------------------------------------------
@@ -427,6 +214,30 @@ export interface ContextPack {
    The agent
    -------------------------------------------------------------------------- */
 
+export interface BrainPattern {
+  id: string;
+  app: string;
+  label: string;
+  intent: string | null;
+  count: number;
+  lastSeen: number;
+  firstSeen: number;
+  instruction: string;
+  episodeIds: string[];
+}
+
+/** A finished agent run, as stored in the db. */
+export interface AgentRun {
+  id: string;
+  title: string;
+  at: number;
+  durationSec: number;
+  outcome: "clean" | "stopped";
+  note: string;
+  steps: number;
+  changes: string[];
+}
+
 export type AgentStatus = "running" | "parked" | "stopping" | "finished" | "stopped";
 
 export interface AgentTask {
@@ -435,6 +246,7 @@ export interface AgentTask {
   title: string;
   instruction: string;
   status: AgentStatus;
+  mode: "background" | "foreground";
   step: number;
   startedAt: number;
   narration: { at: number; text: string }[];
@@ -442,7 +254,7 @@ export interface AgentTask {
   irreversible: boolean;
   recalled: number;
   parked: {
-    rule: HardRuleKind;
+    rule: "delete" | "irreversible" | "outside" | "gui" | "files" | "unknown";
     detail: string;
     action: Record<string, unknown>;
     at: number;
@@ -465,48 +277,157 @@ export interface Entity {
   learnedAt: number;
 }
 
-export interface AwayAuthorization {
-  active: boolean;
-  grantedAt: number;
-  expiresAt: number;
-  routineIds: string[];
-  actionCap: number;
-  actionsUsed: number;
-  keepAlive: boolean;
+/* --------------------------------------------------------------------------
+   Nudges — proactive suggestions from Doppel
+   -------------------------------------------------------------------------- */
+
+export type NudgeKind = "memory" | "stuck" | "task-end" | "open-thread" | "offer";
+
+export interface Nudge {
+  id: string;
+  at: number;
+  kind: NudgeKind;
+  /** What Doppel says, in its own voice. */
+  text: string;
+  /** Button label, or null if the nudge is purely informational. */
+  action: string | null;
+  /** Extra context shown smaller beneath the text. */
+  detail: string | null;
+  /** Which observation triggered this nudge. */
+  episodeId: string;
 }
 
-export type JobState = "queued" | "running" | "needs-you" | "held" | "done" | "stopped";
+/* --------------------------------------------------------------------------
+   Routines — learned automation from observed patterns
+   -------------------------------------------------------------------------- */
 
-export interface PocketJob {
+export interface RoutineSchedule {
+  kind: "daily" | "on-launch" | "manual";
+  timeHint: string;           // "09:00"
+  daysOfWeek: number[];       // 0=Sun..6=Sat
+}
+
+export interface Routine {
   id: string;
-  routineId: string;
-  routineTitle: string;
-  state: JobState;
-  dispatchedAt: number;
-  startedAt?: number;
-  finishedAt?: number;
-  stepLabel?: string;
-  stepIndex: number;
-  stepCount: number;
-  question?: { prompt: string; rule?: HardRuleKind } | null;
-  runId?: string;
-  heldReason?: string;
+  instruction: string;
+  title: string;
+  patternId: string;
+  sourceApp: string;
+  schedule: RoutineSchedule;
+  enabled: boolean;
+  createdAt: number;
+  lastRunAt: number | null;
+  lastOutcome: "done" | "stopped" | null;
+  runCount: number;
+}
+
+export interface RoutineProposal {
+  patternId: string;
+  title: string;
+  instruction: string;
+  sourceApp: string;
+  schedule: RoutineSchedule;
+  reason: string;             // "I noticed you do this every weekday morning"
+  count: number;              // times observed
+}
+
+/* --------------------------------------------------------------------------
+   Workflow recording — learned procedures
+   -------------------------------------------------------------------------- */
+
+export interface ProcedureStep {
+  action: string;
+  location: string;
+  expected: string;
+}
+
+export interface ProcedureParam {
+  name: string;
+  description: string;
+  example: string;
+}
+
+export interface RecordedProcedure {
+  title: string;
+  app: string;
+  steps: ProcedureStep[];
+  parameters: ProcedureParam[];
+  summary: string;
+  recordedAt: number;
+  episodeCount: number;
+}
+
+export interface RecordingSession {
+  sessionId: string;
+  title: string;
+  startedAt: number;
+  steps: number;
+  durationSec: number;
+}
+
+/* --------------------------------------------------------------------------
+   Morning Brief — proactive daily digest
+   -------------------------------------------------------------------------- */
+
+export interface SecurityState {
+  biometric: boolean;
+  lockTimeout: number;
+}
+
+export interface MorningBrief {
+  date: string;               // "YYYY-MM-DD"
+  greeting: string;
+  yesterday: string;
+  patterns: string[];
+  connections: string[];
+  openThreads: string[];
+  suggestion: string;
+  generatedAt: number;
+}
+
+/* --------------------------------------------------------------------------
+   Add-ons
+   -------------------------------------------------------------------------- */
+
+export interface AddonConfigField {
+  key: string;
+  label: string;
+  type: "string" | "number" | "boolean";
+  secret?: boolean;
+  required?: boolean;
+}
+
+export interface AddonInfo {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  icon: string;
+  category: string;
+  type: "api" | "mcp" | "custom";
+  builtin: boolean;
+  permissions: string[];
+  config: AddonConfigField[];
+  tools: { name: string; description: string }[];
+  installed: boolean;
+  enabled: boolean;
+  userConfig: Record<string, string>;
+  needsAuth: boolean;
+  connected: boolean;
 }
 
 /** The whole of what the main process reports. */
-export interface MimicSnapshot {
+export interface DoppelSnapshot {
   version: number;
   createdAt: number;
-  observation: { paused: boolean; roots: string[] };
+  observation: { paused: boolean; roots: string[]; displayId: string | null };
   permissions: Permissions;
   ai: AiState;
   overlay: OverlayState;
+  whisper: WhisperState;
   account: AccountState;
-  routines: Routine[];
-  runs: RunRecord[];
   entities: Entity[];
-  jobs: PocketJob[];
-  away: AwayAuthorization;
   devices: unknown[];
   stats: {
     eventsSeen: number;
@@ -514,6 +435,14 @@ export interface MimicSnapshot {
     looks: number;
     visionTokens: number;
   };
+  addons: { installed: Record<string, { enabled: boolean; config: Record<string, string> }> };
+  security: SecurityState;
+  usage: {
+    current: { month: string; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number; calls: number };
+    months: Record<string, { month: string; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number; calls: number }>;
+  };
   narration: NarrationLine[];
   recentEvents: ObservedEvent[];
+  nudges: Nudge[];
+  nudgeSettings: { enabled: boolean };
 }

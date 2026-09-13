@@ -103,6 +103,6 @@ npm run app             # terminal two — Account in the nav
 npm run test:identity   # 40 tests
 ```
 
-Pair a second machine by running the app with a different `MIMIC_STATE_DIR`, or
+Pair a second machine by running the app with a different `DOPPEL_STATE_DIR`, or
 just trust the tests — they pair two devices, revoke one from the other, and
 assert the revoked one is signed out immediately.

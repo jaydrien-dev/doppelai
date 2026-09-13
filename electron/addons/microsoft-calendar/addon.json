@@ -1,0 +1,59 @@
+{
+  "id": "microsoft-calendar",
+  "name": "Outlook Calendar",
+  "description": "See today's schedule, check upcoming meetings, and search your Outlook / Microsoft 365 calendar.",
+  "version": "0.1.0",
+  "author": "Doppel",
+  "icon": "calendar",
+  "category": "productivity",
+  "type": "api",
+  "builtin": true,
+  "permissions": ["calendar"],
+  "config": [],
+  "auth": {
+    "provider": "microsoft",
+    "clientId": "DOPPEL_AZURE_CLIENT_ID",
+    "authUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "scopes": [
+      "User.Read",
+      "Calendars.Read",
+      "offline_access"
+    ]
+  },
+  "tools": [
+    {
+      "name": "outlook_cal_today",
+      "description": "Get today's events from Outlook Calendar. Returns subject, times, location, and organizer.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "outlook_cal_upcoming",
+      "description": "Get upcoming Outlook events from the next N hours (default 4).",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "hours": { "type": "number", "description": "How many hours ahead. Default: 4." }
+        }
+      }
+    },
+    {
+      "name": "outlook_cal_search",
+      "description": "Search Outlook Calendar events by keyword across the past and next 30 days.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Keyword to search for." },
+          "days": { "type": "number", "description": "Days forward and backward. Default: 30." }
+        }
+      }
+    }
+  ]
+}

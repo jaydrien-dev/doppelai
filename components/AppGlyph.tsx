@@ -1,7 +1,7 @@
 import type { AppId } from "@/lib/types";
 
 /**
- * Quiet monochrome glyphs for the applications Mimic works inside.
+ * Quiet monochrome glyphs for the applications Doppel works inside.
  * Line only, no fills, no colour of their own — they inherit currentColor.
  */
 export function AppGlyph({ app, size = 22 }: { app: AppId; size?: number }) {

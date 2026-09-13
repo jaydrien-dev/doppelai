@@ -13,6 +13,7 @@ next-env.d.ts
 .cache-embed/
 
 # Local identity server data — accounts, devices, sessions. Never committed.
+.doppel-identity/
 .mimic-identity/
 server/data/
 
@@ -21,7 +22,11 @@ server/data/
 .env
 .env.*
 *.local
+doppel-state.json
 mimic-state.json
+
+# Claude Code session data
+.claude/
 
 # OS noise
 .DS_Store

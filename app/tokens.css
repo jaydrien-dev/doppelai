@@ -1,5 +1,5 @@
 /* ===========================================================================
-   Mimic — design tokens.
+   Doppel — design tokens.
    This is the ONLY file in the app allowed to contain literal colour values.
    Everything else references var(--…) or a Tailwind utility mapped from these.
    =========================================================================== */

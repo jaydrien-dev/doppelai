@@ -2,17 +2,19 @@ const {
   app,
   BrowserWindow,
   Menu,
+  globalShortcut,
   ipcMain,
   protocol,
   net,
   screen,
+  session,
   shell,
-  powerSaveBlocker,
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 
+const { autoUpdater } = require("electron-updater");
 const db = require("./core/db");
 const ipc = require("./core/ipc");
 const observer = require("./core/observer");
@@ -21,7 +23,7 @@ const vision = require("./core/vision");
 const brain = require("./core/brain");
 
 /**
- * Mimic runs as a real desktop application. In development it points at the
+ * Doppel runs as a real desktop application. In development it points at the
  * Next dev server; in production it serves the static export over a private
  * app:// protocol so there is no local HTTP server and no file:// path games.
  */
@@ -52,9 +54,8 @@ function resolveExported(urlPath) {
 
   const candidates = [p];
 
-  // Next asks for segment prefetch payloads with a dot separator
-  // (/routines/__next.routines.__PAGE__.txt) but exports them into a nested
-  // folder (/routines/__next.routines/__PAGE__.txt). Accept both spellings.
+  // Next asks for segment prefetch payloads with a dot separator but exports
+  // them into a nested folder. Accept both spellings.
   const nested = p.match(/^(.*)\.([^./]+\.txt)$/);
   if (nested) candidates.push(`${nested[1]}/${nested[2]}`);
 
@@ -69,12 +70,12 @@ function resolveExported(urlPath) {
 }
 
 function baseUrl() {
-  return isDev ? "http://localhost:3000" : "app://mimic";
+  return isDev ? "http://localhost:3000" : "app://doppel";
 }
 
 let deskWindow = null;
-let pocketWindow = null;
 let overlayWindow = null;
+let whisperWindow = null;
 let quitting = false;
 
 function createDeskWindow() {
@@ -112,14 +113,14 @@ function createDeskWindow() {
 }
 
 /* --------------------------------------------------------------------------
-   The overlay — Mimic's presence on the desktop.
+   The overlay — Doppel's presence on the desktop.
 
    A small frameless window that sits in the corner above everything else. It
-   is the only part of Mimic that is always visible, so it does the one job
+   is the only part of Doppel that is always visible, so it does the one job
    that has to be reachable without opening anything: start and stop watching.
    -------------------------------------------------------------------------- */
 
-const OVERLAY = { width: 104, height: 116, margin: 18 };
+const OVERLAY = { width: 240, height: 200, margin: 18 };
 
 function overlayHome() {
   const { workArea } = screen.getPrimaryDisplay();
@@ -136,7 +137,7 @@ function createOverlayWindow() {
   }
 
   /* A remembered position survives restarts, but never off-screen: if the
-     display arrangement changed while Mimic was closed, come home instead. */
+     display arrangement changed while Doppel was closed, come home instead. */
   const saved = db.get().overlay?.position;
   const home = overlayHome();
   const start = saved && onSomeDisplay(saved) ? saved : home;
@@ -197,32 +198,52 @@ function rememberOverlayPosition() {
   );
 }
 
-/** Pocket opens as its own phone-shaped window, so both surfaces sit side by side. */
-function createPocketWindow() {
-  if (pocketWindow && !pocketWindow.isDestroyed()) {
-    pocketWindow.focus();
-    return pocketWindow;
+/* --------------------------------------------------------------------------
+   The whisper panel — Doppel's voice hotkey surface.
+
+   A glassmorphic floating panel that appears on a global hotkey. The user
+   speaks a question and Doppel answers from memory. It follows the same
+   window pattern as the overlay: frameless, transparent, always-on-top,
+   position saved across restarts.
+   -------------------------------------------------------------------------- */
+
+const WHISPER = { width: 680, height: 400 };
+
+function whisperHome() {
+  const { workArea, scaleFactor } = screen.getPrimaryDisplay();
+  return {
+    x: Math.round(workArea.x + (workArea.width - WHISPER.width) / 2),
+    y: workArea.y + 8,
+  };
+}
+
+function createWhisperWindow() {
+  if (whisperWindow && !whisperWindow.isDestroyed()) {
+    whisperWindow.show();
+    whisperWindow.focus();
+    return whisperWindow;
   }
 
-  pocketWindow = new BrowserWindow({
-    width: 412,
-    height: 880,
-    minWidth: 380,
-    minHeight: 700,
-    backgroundColor: CHROME.background,
-    title: "Pocket",
-    show: false,
+  const home = whisperHome();
+  const start = home;
+
+  whisperWindow = new BrowserWindow({
+    ...start,
+    width: WHISPER.width,
+    height: WHISPER.height,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
     alwaysOnTop: true,
-    titleBarStyle: "hidden",
-    ...(process.platform === "darwin"
-      ? { trafficLightPosition: { x: 14, y: 14 } }
-      : {
-          titleBarOverlay: {
-            color: CHROME.background,
-            symbolColor: CHROME.symbol,
-            height: 38,
-          },
-        }),
+    show: false,
+    focusable: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -230,13 +251,62 @@ function createPocketWindow() {
     },
   });
 
-  pocketWindow.once("ready-to-show", () => pocketWindow.show());
-  pocketWindow.on("closed", () => {
-    pocketWindow = null;
+  whisperWindow.setAlwaysOnTop(true, "screen-saver");
+  whisperWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  whisperWindow.once("ready-to-show", () => {
+    whisperWindow.show();
+    whisperWindow.focus();
+  });
+  whisperWindow.on("moved", rememberWhisperPosition);
+  whisperWindow.on("closed", () => {
+    whisperWindow = null;
   });
 
-  pocketWindow.loadURL(`${baseUrl()}/pocket/?window=1`);
-  return pocketWindow;
+  whisperWindow.loadURL(`${baseUrl()}/whisper/`);
+  return whisperWindow;
+}
+
+function rememberWhisperPosition() {
+  if (!whisperWindow || whisperWindow.isDestroyed()) return;
+  const [x, y] = whisperWindow.getPosition();
+  db.update(
+    (s) => {
+      s.whisper.position = { x, y };
+    },
+    { silent: true },
+  );
+}
+
+function registerWhisperHotkey() {
+  const wState = db.get().whisper ?? {};
+  const hotkey = wState.hotkey || "Ctrl+Shift+Space";
+  try {
+    globalShortcut.register(hotkey, () => {
+      if (whisperWindow && !whisperWindow.isDestroyed()) {
+        if (whisperWindow.isVisible()) {
+          whisperWindow.hide();
+        } else {
+          whisperWindow.show();
+          whisperWindow.focus();
+        }
+      } else {
+        createWhisperWindow();
+      }
+    });
+  } catch (err) {
+    console.error("[doppel] could not register whisper hotkey:", err.message);
+  }
+}
+
+function unregisterWhisperHotkey() {
+  const wState = db.get().whisper ?? {};
+  const hotkey = wState.hotkey || "Ctrl+Shift+Space";
+  try {
+    globalShortcut.unregister(hotkey);
+  } catch {
+    /* already gone */
+  }
 }
 
 app.whenReady().then(() => {
@@ -253,47 +323,56 @@ app.whenReady().then(() => {
     });
   }
 
-  // Mimic's memory comes up before its face does.
+  /* Grant microphone access so the whisper panel can use speech recognition. */
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      callback(["media", "audioCapture"].includes(permission));
+    },
+  );
+  session.defaultSession.setPermissionCheckHandler(
+    (_webContents, permission) => {
+      return ["media", "audioCapture"].includes(permission);
+    },
+  );
+
+  // Doppel's memory comes up before its face does.
   db.init();
   ipc.register();
-  startKeepAlive();
 
-  createDeskWindow();
+  /* On startup: just the overlay (tray icon) and the whisper panel.
+     The main window opens from the overlay's right-click menu. */
   if (db.get().overlay?.enabled !== false) createOverlayWindow();
+  if (db.get().whisper?.enabled !== false) {
+    registerWhisperHotkey();
+    createWhisperWindow();
+  }
+
+  /* --------------------------------------------------------- auto-update */
+  if (!isDev) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  }
 
   app.on("activate", () => {
     if (!deskWindow) createDeskWindow();
   });
 });
 
-/**
- * While the user is out and has asked for it, hold the machine awake — an
- * agent that sleeps mid-errand is worse than one that never started.
- */
-let keepAliveId = null;
-function startKeepAlive() {
-  setInterval(() => {
-    const { away } = db.get();
-    const wanted = away.active && away.keepAlive;
-    if (wanted && keepAliveId === null) {
-      keepAliveId = powerSaveBlocker.start("prevent-app-suspension");
-    } else if (!wanted && keepAliveId !== null) {
-      powerSaveBlocker.stop(keepAliveId);
-      keepAliveId = null;
-    }
-  }, 5000);
-}
-
 app.on("before-quit", () => {
+  globalShortcut.unregisterAll();
   observer.stop();
   vision.stop();
   win32.stopWatching();
   brain.flush();
+  db.update((s) => { s.stats.lastRunAt = Date.now(); }, { silent: true });
   db.flush();
+  try { require("./core/browser").shutdown(); } catch {}
+  try { require("./core/addons").shutdown(); } catch {}
 });
 
 /**
- * Closing the main window does not close Mimic.
+ * Closing the main window does not close Doppel.
  *
  * The whole premise is an agent that lives on the machine, so it keeps
  * watching from the overlay with its window put away. Quit is on the overlay's
@@ -302,7 +381,8 @@ app.on("before-quit", () => {
  */
 app.on("window-all-closed", () => {
   if (process.platform === "darwin") return;
-  if (!quitting && overlayWindow && !overlayWindow.isDestroyed()) return;
+  /* Doppel lives in the overlay and whisper — closing the main window doesn't quit. */
+  if (!quitting) return;
   app.quit();
 });
 
@@ -319,10 +399,42 @@ app.on("web-contents-created", (_e, contents) => {
   });
 });
 
-ipcMain.handle("mimic:open-pocket", () => {
-  createPocketWindow();
-  return true;
+/* --------------------------------------------------------------- updates -- */
+
+let updateStatus = { state: "idle", version: null, progress: null };
+
+function broadcastUpdate() {
+  const payload = { ...updateStatus };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send("doppel:update", payload);
+  }
+}
+
+autoUpdater.on("checking-for-update", () => {
+  updateStatus = { state: "checking", version: null, progress: null };
 });
+autoUpdater.on("update-available", (info) => {
+  updateStatus = { state: "available", version: info.version, progress: null };
+  broadcastUpdate();
+});
+autoUpdater.on("update-not-available", () => {
+  updateStatus = { state: "idle", version: null, progress: null };
+});
+autoUpdater.on("download-progress", (prog) => {
+  updateStatus = { ...updateStatus, state: "downloading", progress: Math.round(prog.percent) };
+  broadcastUpdate();
+});
+autoUpdater.on("update-downloaded", (info) => {
+  updateStatus = { state: "ready", version: info.version, progress: 100 };
+  broadcastUpdate();
+});
+autoUpdater.on("error", () => {
+  updateStatus = { state: "idle", version: null, progress: null };
+});
+
+ipcMain.handle("update:status", () => updateStatus);
+ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch(() => {}));
+ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
 
 /* --------------------------------------------------------------- overlay -- */
 
@@ -364,14 +476,14 @@ ipcMain.handle("overlay:menu", () => {
       click: () => toggleWatching(),
     },
     { type: "separator" },
-    { label: "Open Mimic", click: () => focusDesk("/") },
+    { label: "Open Doppel", click: () => focusDesk("/") },
     { label: "What it's thinking", click: () => focusDesk("/mind") },
     { label: "Permissions", click: () => focusDesk("/permissions") },
     { type: "separator" },
     { label: "Move back to the corner", click: () => moveOverlayHome() },
     { label: "Hide this overlay", click: () => hideOverlay() },
     { type: "separator" },
-    { label: "Quit Mimic", click: () => app.quit() },
+    { label: "Quit Doppel", click: () => app.quit() },
   ]);
 
   menu.popup({ window: overlayWindow ?? undefined });
@@ -416,6 +528,41 @@ function toggleWatching() {
 
 ipcMain.handle("overlay:toggleWatch", () => toggleWatching());
 
-ipcMain.handle("mimic:close-window", (event) => {
+ipcMain.handle("doppel:close-window", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
+});
+
+/* ------------------------------------------------------------ whisper -- */
+
+ipcMain.handle("whisper:setEnabled", (_event, enabled) => {
+  db.update((s) => {
+    s.whisper.enabled = Boolean(enabled);
+  });
+  if (enabled) {
+    registerWhisperHotkey();
+  } else {
+    unregisterWhisperHotkey();
+    if (whisperWindow && !whisperWindow.isDestroyed()) whisperWindow.destroy();
+  }
+  return true;
+});
+
+ipcMain.handle("whisper:home", () => {
+  if (!whisperWindow || whisperWindow.isDestroyed()) return false;
+  const home = whisperHome();
+  whisperWindow.setPosition(home.x, home.y);
+  rememberWhisperPosition();
+  return true;
+});
+
+ipcMain.handle("whisper:setAutoDismiss", (_event, sec) => {
+  db.update((s) => {
+    s.whisper.autoDismiss = Math.max(0, Number(sec) || 0);
+  });
+  return true;
+});
+
+ipcMain.handle("whisper:hide", () => {
+  if (whisperWindow && !whisperWindow.isDestroyed()) whisperWindow.hide();
+  return true;
 });

@@ -6,13 +6,13 @@ const db = require("./db");
 const win32 = require("./win32");
 
 /**
- * The only place Mimic touches anything real.
+ * The only place Doppel touches anything real.
  *
  * Three rules hold here, whatever the trust level and whether or not the user
  * is in the room:
  *
  *   1. Nothing outside the folders you've allowed is ever read or written.
- *   2. Nothing is destroyed. "Delete" means moved into Mimic's own trash,
+ *   2. Nothing is destroyed. "Delete" means moved into Doppel's own trash,
  *      where it can be fetched back.
  *   3. Every action writes down how to undo itself before it does anything.
  *      An action with no honest inverse marks the whole run irreversible and
@@ -289,7 +289,7 @@ async function run(action, { runId, overrides = {}, approved = false } = {}) {
         return {
           ok: true,
           detail: `${found.name} put aside`,
-          changes: [`Put ${found.name} in Mimic's trash — still recoverable`],
+          changes: [`Put ${found.name} in Doppel's trash — still recoverable`],
           inverse: [{ kind: "move-exact", from: target, to: found.path }],
         };
       }

@@ -93,7 +93,7 @@ export function Chip({
   );
 }
 
-/** A block of Mimic's own speech. Always on the soft blue wash. */
+/** A block of Doppel's own speech. Always on the soft blue wash. */
 export function AgentLine({
   children,
   size = "body",

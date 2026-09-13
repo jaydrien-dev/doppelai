@@ -2,43 +2,39 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { mimic, useMimic } from "@/lib/store";
-import { voice, HARD_RULE_SENTENCE } from "@/lib/voice";
+import { doppel, useDoppel } from "@/lib/store";
+import { voice } from "@/lib/voice";
 import { formatDuration } from "@/lib/time";
 import { Pulse } from "./Pulse";
 import { Mascot } from "./Mascot";
 import { Button } from "./ui";
 
 /**
- * Ask Mimic to do something, and watch it do it.
+ * Ask Doppel to do something, and watch it do it.
  *
- * The narration is the agent's own text between tool calls — the same words it
- * would say to a colleague who stepped away. When it hits a hard rule it stops
- * here and waits; nothing about being asked for a task changes what it will do
- * without permission.
+ * Multiple background tasks can run concurrently. The console shows all of
+ * them, with approval controls for any that are parked.
  */
 export function AgentConsole() {
-  const task = useMimic((s) => s.activeAgent);
-  const ai = useMimic((s) => s.ai);
-  const canDrive = useMimic((s) => s.permissions.actGui);
+  const agents = useDoppel((s) => s.agents);
+  const ai = useDoppel((s) => s.ai);
+  const canDrive = useDoppel((s) => s.permissions.actGui);
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const busy = task && ["running", "parked", "stopping"].includes(task.status);
+  const anyBusy = agents.some((t) => ["running", "parked", "stopping"].includes(t.status));
 
   const go = async () => {
     if (!instruction.trim()) return;
     setError(null);
     const text = instruction;
     setInstruction("");
-    const result = await mimic.runAgent({ instruction: text });
+    const result = await doppel.runAgent({ instruction: text });
     if (!result?.ok) {
       setError(
         result?.reason === "no-key"
           ? voice.agent.needsKey
-          : result?.reason === "busy"
-            ? "I'm already doing something."
-            : (result?.detail ?? "I couldn't start."),
+          : (result?.detail ?? "I couldn't start."),
       );
       setInstruction(text);
     }
@@ -47,7 +43,7 @@ export function AgentConsole() {
   return (
     <div className="raised" style={{ padding: 28 }}>
       <div className="flex items-start gap-4">
-        <Mascot mood={busy ? "working" : "idle"} size="md" />
+        <Mascot mood={anyBusy ? "working" : "idle"} size="md" />
         <div className="min-w-0 flex-1">
           <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>{voice.agent.title}</p>
           <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
@@ -60,9 +56,8 @@ export function AgentConsole() {
         <input
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !busy && go()}
+          onKeyDown={(e) => e.key === "Enter" && go()}
           placeholder={voice.agent.placeholder}
-          disabled={Boolean(busy)}
           className="min-w-0 flex-1"
           style={{
             padding: "13px 16px",
@@ -71,23 +66,21 @@ export function AgentConsole() {
             boxShadow: "var(--elev-pressed-sm)",
             fontSize: "var(--text-sm)",
             color: "var(--ink)",
-            opacity: busy ? 0.5 : 1,
           }}
         />
-        {busy ? (
-          <Button onClick={() => mimic.abortAgent()}>
-            {task?.status === "stopping" ? voice.agent.stopping : voice.agent.stop}
-          </Button>
-        ) : (
-          <Button variant="primary" onClick={go} disabled={!instruction.trim() || !ai.configured}>
-            {voice.agent.go}
+        <Button variant="primary" onClick={go} disabled={!instruction.trim() || !ai.configured}>
+          {voice.agent.go}
+        </Button>
+        {anyBusy && (
+          <Button onClick={() => doppel.abortAgent()}>
+            Stop all
           </Button>
         )}
       </div>
 
       {!canDrive && (
-        <p className="agent-voice mt-4" style={{ fontSize: "var(--text-sm)", color: "var(--primary)" }}>
-          {voice.agent.needsGui}
+        <p className="agent-voice mt-4" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+          Background mode — I'll use the file system and command line. For tasks that need the screen, switch on GUI in Permissions.
         </p>
       )}
       {error && (
@@ -98,8 +91,9 @@ export function AgentConsole() {
 
       {/* ------------------------------------------------------------ live */}
       <AnimatePresence>
-        {task && (
+        {agents.map((task) => (
           <motion.div
+            key={task.id}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
@@ -114,12 +108,22 @@ export function AgentConsole() {
                 <span className="flex items-center gap-3">
                   {task.status === "running" && <Pulse size={28} className="-m-1" />}
                   <span className="micro-label">
+                    {task.mode === "background" ? "background · " : "screen · "}
                     {task.status === "running"
                       ? voice.agent.running(task.step)
                       : task.status === "parked"
                         ? "waiting on you"
                         : task.status}
                   </span>
+                  {task.status === "running" && (
+                    <button
+                      onClick={() => doppel.abortAgent(task.id)}
+                      className="cursor-pointer micro-label"
+                      style={{ color: "var(--slate)" }}
+                    >
+                      stop
+                    </button>
+                  )}
                 </span>
               </div>
 
@@ -127,7 +131,6 @@ export function AgentConsole() {
                 <p className="micro-label mt-3">{voice.agent.recalled(task.recalled)}</p>
               )}
 
-              {/* what it's saying as it goes */}
               {task.narration.length > 0 && (
                 <ul className="mt-6 flex flex-col gap-3">
                   {task.narration.slice(-8).map((line, i) => (
@@ -138,7 +141,6 @@ export function AgentConsole() {
                 </ul>
               )}
 
-              {/* stopped to ask */}
               {task.parked && (
                 <div
                   className="agent-voice mt-6"
@@ -151,25 +153,24 @@ export function AgentConsole() {
                   <p style={{ fontWeight: 600, color: "var(--primary)" }}>
                     {voice.agent.parkedTitle}
                   </p>
-                  <p className="mt-2">{HARD_RULE_SENTENCE[task.parked.rule]}</p>
+                  <p className="mt-2">{task.parked.rule}</p>
                   <p className="mt-1" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
                     {task.parked.detail}
                   </p>
                   <div className="mt-5 flex flex-wrap gap-3">
-                    <Button variant="primary" size="sm" onClick={() => mimic.answerAgent("approve")}>
+                    <Button variant="primary" size="sm" onClick={() => doppel.answerAgent(task.id, "approve")}>
                       {voice.agent.approve}
                     </Button>
-                    <Button size="sm" onClick={() => mimic.answerAgent("skip")}>
+                    <Button size="sm" onClick={() => doppel.answerAgent(task.id, "skip")}>
                       {voice.agent.skip}
                     </Button>
-                    <Button variant="ghost" size="sm" onClick={() => mimic.answerAgent("stop")}>
+                    <Button variant="ghost" size="sm" onClick={() => doppel.answerAgent(task.id, "stop")}>
                       {voice.agent.abandon}
                     </Button>
                   </div>
                 </div>
               )}
 
-              {/* the result */}
               {task.summary && (
                 <div className="pressed mt-7" style={{ padding: 24 }}>
                   <p style={{ fontWeight: 600 }}>
@@ -229,7 +230,7 @@ export function AgentConsole() {
               )}
             </div>
           </motion.div>
-        )}
+        ))}
       </AnimatePresence>
     </div>
   );

@@ -52,7 +52,7 @@ function save() {
       fs.writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), "utf8");
       fs.renameSync(`${file}.tmp`, file);
     } catch (err) {
-      console.error("[mimic-id] could not save:", err.message);
+      console.error("[doppel-id] could not save:", err.message);
     }
   }, 150);
 }
@@ -66,7 +66,7 @@ function flush() {
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(data, null, 2), "utf8");
     fs.renameSync(`${file}.tmp`, file);
   } catch (err) {
-    console.error("[mimic-id] could not save:", err.message);
+    console.error("[doppel-id] could not save:", err.message);
   }
 }
 
@@ -256,7 +256,7 @@ function exportAccount(accountId) {
   return {
     exportedAt: new Date().toISOString(),
     note:
-      "This is everything the Mimic account holds. It is identity and device " +
+      "This is everything the Doppel account holds. It is identity and device " +
       "records only — your trained agent lives on your own machines and is " +
       "exported separately from the app.",
     account: { id: account.id, email: account.email, createdAt: account.createdAt },

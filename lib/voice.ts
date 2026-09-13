@@ -1,11 +1,15 @@
-import type { HardRuleKind } from "./types";
 
 /**
- * Every string Mimic itself says lives here.
+ * Every string Doppel itself says lives here.
  *
  * The voice: first person, warm, understated, slightly dry. Short sentences.
  * Admits uncertainty freely. Reports what it did; never praises itself.
  * No exclamation marks. No emoji. Never "I'm just an AI".
+ *
+ * Doppel is a personal execution engine. It observes how you work, works
+ * while you work, and works while you don't. It stores intent, not clicks.
+ * It knows when you do things, not just what. It gets better while you're
+ * doing nothing.
  */
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -15,17 +19,67 @@ export const voice = {
   first: {
     title: "I don't know anything yet.",
     body:
-      "I've started watching. Work the way you normally would and I'll begin to notice " +
-      "the things you repeat. It takes a few goes before I'll say anything.",
+      "I've started watching. Work the way you normally would — I'll learn how you work, " +
+      "your rhythm, and your patterns. It takes a few goes before I'll say anything.",
     watching: (n: number) =>
       n === 0
         ? "I'm not watching any folders yet."
         : `I'm watching ${n} ${plural(n, "folder", "folders")} and whatever window you're in.`,
-    teach: "If you'd rather not wait, show me something once.",
-    noRoutines: "Nothing yet. I'll speak up when something starts repeating.",
+    teach: "Ask me to do something and I'll get started.",
     browser:
       "This is the desktop app's interface running in a browser, so there's nothing for me to watch. " +
-      "Open Mimic proper and I'll be able to see your work.",
+      "Open Doppel proper and I'll be able to see your work.",
+  },
+
+  /* --- Onboarding --------------------------------------------------------- */
+  onboarding: {
+    welcome: "Hi. I'm Doppel.",
+    welcomeBody:
+      "I watch how you work and learn to help. I can organize files, look things up, " +
+      "remember what you were doing, and eventually do tasks for you. Let's get me set up.",
+    stepKey: "Connect to AI",
+    stepKeyBody:
+      "I use an AI called Claude to understand what's on your screen. " +
+      "You'll need a key from Anthropic — it takes about 30 seconds to get one.",
+    stepKeyLink: "Get a key from console.anthropic.com",
+    stepScreen: "Let me see your screen",
+    stepScreenBody:
+      "This is what makes me useful. Without it, I can only see file names and window titles. " +
+      "With it, I actually understand what you're working on.",
+    stepScreenNote:
+      "Screenshots go to the AI to be described, then the screenshot is deleted. " +
+      "I skip anything that looks private — passwords, bank details, personal messages.",
+    stepFolder: "Pick a folder to watch",
+    stepFolderBody:
+      "Choose where you do your work. I'll watch for new files, moves, and renames " +
+      "inside this folder. I can't see anything outside it.",
+    stepDone: "You're all set.",
+    stepDoneBody:
+      "I'll start learning how you work. The more you use your computer normally, " +
+      "the more useful I become. Try asking me something when you're ready.",
+    getStarted: "Get started",
+    next: "Next",
+    done: "Start watching",
+    skip: "Skip for now",
+  },
+
+  /* --- Suggested actions -------------------------------------------------- */
+  suggestions: {
+    title: "Try asking me",
+    items: [
+      { label: "What am I looking at?", instruction: "Look at my screen and describe what I'm working on right now." },
+      { label: "Organize my desktop", instruction: "Look at my desktop and organize the files into sensible folders by type or project." },
+      { label: "Summarize my day", instruction: "What have I been doing today? Give me a summary of my work." },
+      { label: "Find a file I was using", instruction: "Search my memory for files I was recently working with and list them." },
+      { label: "Research something", instruction: "I need you to research something for me on the web." },
+    ],
+  },
+
+  /* --- Agent history ------------------------------------------------------ */
+  history: {
+    title: "Things I've done",
+    empty: "Nothing yet. Ask me to do something and it'll show up here.",
+    showMore: "Show more",
   },
 
   /* --- The Den ------------------------------------------------------------- */
@@ -35,228 +89,12 @@ export const voice = {
     idle: (app: string) => `You're in ${app}. Nothing worth noting yet.`,
     paused: "I've stopped watching. Nothing is being recorded.",
     pausedSub: "Turn me back on whenever you want. I won't mind the gap.",
-    nothingWaiting: "Nothing needs you. I'll say something when that changes.",
-    somethingWaiting: (n: number) =>
-      n === 1 ? "One thing is waiting on you." : `${n} things are waiting on you.`,
     lastTick: (mins: number) =>
       mins < 1 ? "Last saw something just now." : `Last saw something ${mins} ${plural(mins, "minute", "minutes")} ago.`,
     seen: (events: number, sessions: number) =>
       `${events.toLocaleString()} ${plural(events, "thing", "things")} noticed, in ${sessions} ${plural(sessions, "stretch", "stretches")} of work.`,
-    away: "You're out. I'm working quietly.",
-    awaySub: (mins: number, n: number) =>
-      `${n} ${plural(n, "routine", "routines")} authorised, ${mins} ${plural(mins, "minute", "minutes")} of authority left.`,
-  },
-
-  /* --- Learning & teaching ------------------------------------------------- */
-  learning: {
-    seen: (n: number) => `Seen it ${n} ${plural(n, "time", "times")}.`,
-    stillUnsure: (what: string) => `Still unsure: ${what}`,
-    waysSeen: (n: number) =>
-      n === 1 ? "I've only seen you do it one way." : `I've seen you do it ${n} different ways.`,
-    pathLabel: (n: number) => `${n} ${plural(n, "time", "times")}`,
-  },
-
-  teach: {
-    cta: "Watch this",
-    title: "Show me once",
-    body:
-      "Go and do the thing. I'll pay proper attention. " +
-      "One deliberate run teaches me more than six accidental ones.",
-    arm: "I'm watching now",
-    armed: "Watching. Take your time.",
-    armedSub: "Do the whole thing, then tell me you're done and I'll work out what I saw.",
-    done: "That's it, I'm finished",
-    cancel: "Not now",
-    learned: (title: string) => `Right. I think I have ${title}.`,
-    learnedSub: "I'll still want to prove it under supervision before I do it alone.",
-    jump: (to: number) => `That puts me at ${to}%.`,
-    nothing: "I didn't see enough to go on.",
-    nothingSub:
-      "I need at least two things I can act on — a file moving, a window changing. Try once more, a bit slower.",
-    pausedWarning: "I'm not watching anything at the moment. Turn observation back on first.",
-  },
-
-  /* --- Ready --------------------------------------------------------------- */
-  ready: {
-    prompt: "I think I have this one. Want me to try it while you watch?",
-    cta: "Let Mimic try it",
-    intentLabel: "What this is for",
-    criteriaLabel: "How I'll know it worked",
-    pathsLabel: "What I'd do, in order",
-    guessCount: (n: number) =>
-      n === 0
-        ? "I'm confident about all of it."
-        : `${n} of these ${plural(n, "step is", "steps are")} a guess.`,
-    consent: "I won't run anything until you say so.",
-    realWarning: "This does the real thing to real files. You can put any of it back afterwards.",
-  },
-
-  /* --- Run Theatre --------------------------------------------------------- */
-  run: {
-    tracker: (n: number, of: number) => `Run ${n} of ${of}`,
-    trackerRule:
-      "A run with no corrections moves me one step closer. If you correct me, that run starts over.",
-    paused: "Held. Nothing is moving.",
-    steppedBack: "Back a step. I've undone what I did and I'll do it again.",
-    correctionAck: (lesson: string) => `Got it — ${lesson}`,
-    correctionResets:
-      "That correction means this run starts over. I'd rather earn it than be handed it.",
-    summaryTitle: "That's the run.",
-    nothingToDo: "There was nothing to do this time.",
-    remaining: (n: number) =>
-      n === 0 ? "That's the last one I needed." : `${n} clean ${plural(n, "run", "runs")} to go.`,
-    close: "Close",
-    changesLabel: "What actually changed",
-    completedLabel: "What I finished",
-    notCompletedLabel: "What I didn't",
-    noChanges: "Nothing changed on disk.",
-
-    stoppedTitle: "I stopped cleanly.",
-    stoppedSub: "Nothing is half-done. Tell me what you'd like me to do about it.",
-    stoppedRetry: "Try it again",
-    stoppedHandBack: "I'll do it myself",
-
-    parkedTitle: "I've parked this one.",
-    parkedApprove: "Go ahead",
-    parkedSkip: "Skip that bit",
-    parkedStop: "Stop here",
-
-    yieldedTitle: "You're back.",
-    yielded: (step: string) => `I was part-way through ${step}. I've stopped touching things.`,
-    yieldedResume: "Carry on",
-    yieldedHandOver: "I'll take it from here",
-    yieldedStop: "Stop and put it down",
-  },
-
-  /* --- Judgment & limits ---------------------------------------------------- */
-  rules: {
-    title: "What I'll never do quietly",
-    body:
-      "These stop and ask every time, whatever you've trusted me with. " +
-      "Being allowed to run alone doesn't change them.",
-    list: [
-      "Anything that clears a file away, even into my own trash",
-      "Anything I can't undo afterwards",
-      "Anything outside the folders you've allowed",
-      "Anything I don't recognise",
-    ],
-    reassure: (trash: string) =>
-      `Nothing is ever really deleted. It goes to ${trash}, and stays there until you empty it.`,
-    none: "Nothing in this one trips a hard rule.",
-  },
-
-  /* --- Drift ---------------------------------------------------------------- */
-  drift: {
-    flag: "This hasn't gone cleanly twice.",
-    ask: "Can I watch you do it once more?",
-    body:
-      "Something about it has changed and I'd rather learn it again than keep guessing. " +
-      "I'll keep everything you've already taught me.",
-    accept: "Show me again",
-    dismiss: "It's fine, carry on",
-    relearning: "Learning this one again. Everything you taught me is still here.",
-  },
-
-  /* --- Graduation one ------------------------------------------------------- */
-  graduation: {
-    eyebrow: "Proven",
-    ask: "I think I can take this one from here.",
-    body:
-      "You've watched me do this enough times that I'm no longer guessing. " +
-      "If you let me, I'll run it myself and tell you afterwards.",
-    reassure: "You can take it back at any point. One click, no argument.",
-    scope: "This is while you're at the machine. Running it while you're out is a separate ask.",
-    grant: "Let it run on its own",
-    notYet: "Not yet",
-    granted: (title: string) => `Thank you. ${title} is mine now.`,
-    grantedSub: "You'll find it in the ledger each time it runs.",
-  },
-
-  /* --- Graduation two ------------------------------------------------------- */
-  unattended: {
-    eyebrow: "The second ask",
-    ask: "May I do this one while you're out?",
-    body: (n: number) =>
-      `I've run it ${n} ${plural(n, "time", "times")} on my own with you at the machine, and nothing needed you. ` +
-      "Running it while you're away is a different kind of trust, so I'm asking separately.",
-    caveats:
-      "The hard rules don't change. Anything that clears a file away, or that I can't undo, " +
-      "still stops and waits for you — even with nobody here.",
-    grant: "Let it run while I'm out",
-    notYet: "Not yet",
-    granted: (title: string) => `Understood. ${title} can run while you're out.`,
-    grantedSub: "You still have to authorise a session before I use it. It isn't a standing pass.",
-    marker: "Can run while you're out",
-    progress: (passed: number, of: number) => `${passed} of ${of} clean runs with you here.`,
-  },
-
-  /* --- Trusted / demotion ---------------------------------------------------- */
-  trusted: {
-    marker: "Runs on its own",
-    lastRun: (when: string) => `Last ran ${when}.`,
-    never: "Hasn't run yet.",
-    demote: "Watch this one again",
-    demoted: "Back under supervision. I'll show you my working.",
-    revokeUnattended: "Only while I'm here",
-    revoked: "Fine. I'll wait for you.",
-    runNow: "Run it now",
-  },
-
-  /* --- Things I taught it ---------------------------------------------------- */
-  lessons: {
-    title: "Things you taught me",
-    empty: "You haven't had to correct me on this one yet.",
-    count: (n: number) => `${n} ${plural(n, "thing", "things")}`,
-    viaCorrection: "you corrected me",
-    viaAnswer: "you told me",
-    viaRule: "you set a rule",
-  },
-
-  /* --- Routine detail --------------------------------------------------------- */
-  detail: {
-    intentTitle: "What this is for",
-    criteriaTitle: "How I know it worked",
-    pathsTitle: "How I've seen you do it",
-    pathsNote: "Steps are evidence, not a script. I follow the intent.",
-    planTitle: "What I'd do next time",
-    planNote: "Each of these is something I can actually carry out.",
-    historyTitle: "How sure I've become",
-    runsTitle: "Every time I've run it",
-    noRuns: "I haven't run this one yet.",
-    sourceLabel: "Where I picked this up",
-    stageTitle: "Where it stands",
-    forget: "Forget this routine",
-  },
-
-  /* --- Ledger ----------------------------------------------------------------- */
-  ledger: {
-    title: "The week",
-    intro: (runs: number, mins: number) =>
-      runs === 0
-        ? "I haven't run anything yet."
-        : `I ran ${runs} ${plural(runs, "thing", "things")} and gave you back about ${mins} ${plural(mins, "minute", "minutes")}.`,
-    trendUp: (n: number) => `${n} more than last week.`,
-    trendDown: (n: number) => `${n} fewer than last week.`,
-    trendFlat: "About the same as last week.",
-    empty: "Nothing to report yet.",
-    emptySub: "Once I've run something, everything I did will be listed here, with a way to put it back.",
-    correctionsNote: (n: number) =>
-      n === 0 ? "You didn't need to correct me." : `You corrected me ${n} ${plural(n, "time", "times")}. Each one stuck.`,
-    why: "Why did you do that?",
-    whySaw: "What I saw",
-    whyInferred: "What I took from it",
-    whyApplied: "What you'd taught me",
-    rollback: "Put it back",
-    rolledBack: "Put back. It's as it was.",
-    notReversible: "I can't undo this one",
-    undoWindow: "Anything from the last day",
-    undoEmpty: "Nothing from the last day.",
-    exportBody: "A plain file of every run this week, with times.",
-    exportCta: "Export the week",
-    exported: (file: string) => `Saved to ${file}.`,
-    recording: "Watch the recording",
-    recordingNote: "A clean clip of me doing it, if you want to show someone.",
-    trash: "Open my trash",
+    inputPlaceholder: "Ask me something or tell me what to do",
+    recentlyTitle: "What I've been noticing",
   },
 
   /* --- Permissions & memory ----------------------------------------------------- */
@@ -264,9 +102,10 @@ export const voice = {
     intro: "Here's what I can see and what I can do without asking first.",
     localTitle: "What stays here, and what doesn't",
     localBody:
-      "The work happens on this machine, in your own windows and your own logged-in sessions. " +
-      "No service has to agree to let me in, and nothing about your files, windows or clipboard " +
-      "ever leaves.",
+      "Everything happens on this machine, in your own windows and your own logged-in sessions. " +
+      "No service has to agree to let me in. I work with software that has no API and never will — " +
+      "legacy portals, government systems, industry tools from 2009. Nothing about your files, " +
+      "windows or clipboard ever leaves.",
     localScreen:
       "The exception is reading the screen. To understand what I'm looking at I send the " +
       "screenshot to Anthropic to be described, and keep only the description. That happens " +
@@ -276,6 +115,10 @@ export const voice = {
       "Reading the screen is switched off, so nothing at all is leaving this machine right now.",
     watchTitle: "What I watch",
     actTitle: "What I may do without asking",
+    displayTitle: "Which screen I watch",
+    displayNote: "I only look at one display at a time. Pick the one where you do most of your work.",
+    displayPrimary: "Primary",
+    displayAuto: "Auto (primary display)",
     foldersTitle: "Folders I may watch and work in",
     foldersNote:
       "This is the whole of my world. I don't read, move or change anything outside these.",
@@ -300,10 +143,10 @@ export const voice = {
         "I keep a fingerprint and how long it was, never the text. It's how I learn the middle of things.",
       screen: "Read the screen",
       screenDetail:
-        "This is the one that makes me useful rather than merely observant — it's the difference " +
-        "between knowing you opened Excel and knowing you were reconciling October. Screenshots go " +
-        "to Claude to be described, and only the description is kept. Anything that looks private is " +
-        "skipped without being written down.",
+        "This is what makes me useful rather than merely observant — the difference " +
+        "between knowing you opened Excel and knowing you were reconciling October invoices " +
+        "and got stuck on a formula. Screenshots go to Claude to be described, and only the " +
+        "description is kept. Anything that looks private is skipped without being written down.",
       actFiles: "Move, rename and copy files",
       actFilesDetail: "Only inside the folders below. Every one can be put back.",
       actWrite: "Create folders and archives",
@@ -326,67 +169,6 @@ export const voice = {
     forget: "Forget this",
     empty: "I haven't worked anything out yet.",
     learned: (when: string) => `Learned ${when}`,
-  },
-
-  /* --- Away Mode ------------------------------------------------------------------ */
-  away: {
-    title: "Going out",
-    intro:
-      "This is authority for one stretch of time, not a setting. " +
-      "Pick what I may do, how far I may go, and when it lapses.",
-    routinesLabel: "What I may run",
-    routinesNote: "Only routines you've allowed to run while you're out.",
-    routinesEmpty:
-      "Nothing has passed the second graduation yet, so there's nothing I can do while you're out.",
-    actionsLabel: "How many things I may do",
-    durationLabel: "How long this lasts",
-    keepAliveLabel: "Keep this machine awake",
-    keepAliveNote: "Otherwise it may sleep and nothing will run until you're back.",
-    summaryTitle: "So, to be clear",
-    summary: (routines: number, actions: number, hours: number) =>
-      `For the next ${hours} ${plural(hours, "hour", "hours")} I may run ${routines} ${plural(routines, "routine", "routines")} ` +
-      `and do at most ${actions} things. After that I stop on my own.`,
-    hardRules: "Anything that clears a file away, or that I can't undo, still waits for you.",
-    grant: "Hand over the keys",
-    active: "Away Mode is on",
-    remaining: (mins: number) =>
-      mins <= 0 ? "Authority has lapsed." : `${mins} ${plural(mins, "minute", "minutes")} of authority left.`,
-    used: (actions: number, cap: number) => `${actions} of ${cap} things done.`,
-    end: "I'm back",
-    sinceTitle: "Since you left",
-    sinceEmpty: "Nothing yet.",
-  },
-
-  /* --- Pocket ------------------------------------------------------------------------ */
-  pocket: {
-    title: "Pocket",
-    dispatchTitle: "Send something to the machine",
-    dispatchEmpty: "Nothing is authorised to run while you're out.",
-    confirmBiometric: "Confirm it's you",
-    confirmBody: "Hold to send",
-    holding: "Keep holding",
-    queued: "Waiting its turn",
-    running: "Running now",
-    needsYou: "Needs you",
-    done: "Done",
-    stopped: "Stopped cleanly",
-    held: "Held",
-    heldBody: "I'm paused, so I've kept your instruction. It'll go the moment you start me again.",
-    empty: "Nothing in the queue.",
-    emptySub: "Send something and it'll appear here.",
-    approve: "Go ahead",
-    skip: "Skip that bit",
-    later: "I'll deal with it later",
-    presenceOnline: "Your machine is awake",
-    presenceOnlineSub: "Ready when you are.",
-    presencePaused: "I'm paused",
-    presencePausedSub: "Nothing is lost. Anything you send is held until you start me again.",
-    presenceAway: "Away Mode is on",
-    stopAll: "Stop everything",
-    stopAllConfirm: "Stop everything and put back what you can?",
-    resultTitle: "What I did",
-    clear: "Clear the finished ones",
-    custodyNote: "This window is paired to the machine it's running on. No password, no account.",
   },
 
   /* --- The account ------------------------------------------------------------------- */
@@ -490,7 +272,7 @@ export const voice = {
     title: "What I'm thinking",
     intro:
       "This is the part of me that looks at your screen and works out what's going on, " +
-      "and the memory it all goes into.",
+      "and the memory it all goes into. I remember why, not just what.",
 
     keyTitle: "Where my intelligence comes from",
     keyBody:
@@ -587,9 +369,12 @@ export const voice = {
     title: "Ask me to do something",
     intro:
       "Tell me what you want done and I'll do it on this machine — your applications, " +
-      "your files, your logged-in sessions. I'll show you every step as I go.",
+      "your files, your logged-in sessions. I work with whatever you have open, " +
+      "no API or integration needed.",
     placeholder: "Tidy the screenshots on my desktop into a folder for this month",
     go: "Do it",
+    background: "Working in the background. You can keep working.",
+    foreground: "Using your screen. Step away while I work.",
     running: (step: number) => `Working — step ${step}`,
     needsGui:
       "I can't drive applications yet. Switch that on in Permissions and I'll be able to " +
@@ -613,16 +398,190 @@ export const voice = {
     history: "Things I've done",
   },
 
+  /* --- Patterns — things you do repeatedly ------------------------------------------ */
+  patterns: {
+    title: "Things you do",
+    empty: "I haven't spotted any patterns yet. Keep working and I'll notice.",
+    count: (n: number) => `${n} ${plural(n, "time", "times")}`,
+    doIt: "Do this for me",
+  },
+
+  /* --- Morning Brief ----------------------------------------------------------------- */
+  brief: {
+    title: "Your morning brief",
+    generating: "Writing your brief",
+    notReady: "I haven't watched enough yet to write a brief. Give me a few days.",
+    noKey: "I need a key before I can write a brief.",
+    yesterday: "Yesterday",
+    patterns: "Patterns I've noticed",
+    connections: "Dots I've connected",
+    openThreads: "Open threads",
+    suggestion: "My suggestion for today",
+    refresh: "Write a new one",
+  },
+
+  /* --- Routines — learned automation ------------------------------------------------ */
+  routines: {
+    title: "Routines",
+    intro: "Things I've seen you do often enough that I can do them for you.",
+    empty: "Nothing yet. I need to watch for a while before I can spot patterns.",
+    proposalsTitle: "I've noticed these patterns",
+    accept: "Automate this",
+    reject: "Not interested",
+    runNow: "Run now",
+    remove: "Remove",
+    enable: "Enable",
+    disable: "Disable",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    schedule: (kind: string, timeHint: string) =>
+      kind === "daily" && timeHint
+        ? `Daily around ${timeHint}`
+        : kind === "on-launch"
+          ? "Every time the app opens"
+          : "Manual only",
+    lastRun: (when: string) => `Last run ${when}`,
+    neverRun: "Never run",
+    count: (n: number) => `Run ${n} ${n === 1 ? "time" : "times"}`,
+    reason: (reason: string) => reason,
+  },
+
+  /* --- Timeline search -------------------------------------------------------------- */
+  timeline: {
+    title: "Timeline",
+    intro: "Everything I've seen, day by day. Search by words, numbers, or meaning.",
+    empty: "Nothing recorded yet.",
+    searchPlaceholder: "Search what I remember",
+    today: "Today",
+    noResults: "Nothing matches that search.",
+    sensitive: "Something private was on screen.",
+    dateLabel: (date: string) => {
+      const d = new Date(date + "T12:00:00");
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const isYesterday =
+        d.toDateString() === new Date(Date.now() - 86400000).toDateString();
+      if (isToday) return "Today";
+      if (isYesterday) return "Yesterday";
+      return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    },
+    count: (n: number) => `${n} ${n === 1 ? "moment" : "moments"}`,
+  },
+
+  /* --- Workflow recording ----------------------------------------------------------- */
+  recorder: {
+    title: "Watch me do this",
+    body:
+      "Show me a task once and I'll learn the procedure. I watch the screen while you " +
+      "work, then distill it into steps I can replay later.",
+    start: "Start recording",
+    stop: "I'm done",
+    abort: "Cancel",
+    recording: "Recording",
+    steps: (n: number) => `${n} ${n === 1 ? "step" : "steps"} captured`,
+    duration: (sec: number) =>
+      sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`,
+    distilling: "Learning the procedure",
+    tooShort: "I need to see at least two things to learn from.",
+    needsScreen: "I need screen watching turned on to record.",
+    needsKey: "I need a key before I can record.",
+    resultTitle: "Here's what I learned",
+    save: "Save as routine",
+    saved: "Saved. You'll find it in Routines.",
+    discard: "Discard",
+    placeholder: "What are you about to do? (optional)",
+  },
+
+  /* --- Security — biometric lock ---------------------------------------------------- */
+  security: {
+    title: "Biometric lock",
+    body:
+      "Require Windows Hello (face, fingerprint, or PIN) to access Doppel. " +
+      "Your brain data is already encrypted at rest — this adds a second barrier.",
+    enable: "Turn on",
+    disable: "Turn off",
+    locked: "Locked",
+    unlock: "Unlock with Windows Hello",
+    unlocking: "Verifying",
+    lockNow: "Lock now",
+    unavailable:
+      "Windows Hello isn't set up on this machine. Set it up in Windows Settings " +
+      "under Accounts > Sign-in options, then come back.",
+    failed: "Verification failed. Try again.",
+    timeout: "Auto-lock after inactivity",
+    timeoutNone: "Only when I restart",
+    timeoutMinutes: (n: number) => `${n} ${n === 1 ? "minute" : "minutes"}`,
+  },
+
+  /* --- Nudges — proactive suggestions ----------------------------------------------- */
+  nudge: {
+    memory: "I've seen this before.",
+    stuck: "You've been here a while.",
+    taskEnd: "Looks like that's done.",
+    openThread: "Something was left unfinished.",
+    offer: "I could do this for you.",
+    dismiss: "Dismiss",
+    showMe: "Show me",
+    doIt: "Do it",
+    tellMore: "Tell me more",
+  },
+
+  /* --- The whisper panel -------------------------------------------------------------- */
+  whisper: {
+    title: "Voice hotkey",
+    body:
+      "Press the hotkey anywhere and ask me something. I'll answer from what I remember.",
+    idle: "Ask me anything",
+    listening: "Listening",
+    transcribing: "Transcribing",
+    thinking: "Thinking",
+    noSpeech: "I didn't catch that.",
+    needsKey: "Add an OpenAI key in Permissions to use voice",
+    dismiss: "Got it",
+    home: "Move back to the top",
+    openaiTitle: "Voice transcription",
+    openaiBody:
+      "I use OpenAI Whisper to turn your speech into text. That needs a key from " +
+      "platform.openai.com. It's kept on this machine and used for nothing else.",
+    openaiPlaceholder: "sk-…",
+    openaiSave: "Use this key",
+    openaiGood: (hint: string) => `Working. Using the key ending ${hint}.`,
+    openaiClear: "Forget the key",
+    openaiMissing: "Without this key I can still take typed questions, but I can't listen.",
+  },
+
+  /* --- Add-ons ------------------------------------------------------------------- */
+  store: {
+    title: "Add-ons",
+    intro: "More tools for me to work with. Each one gives me a new capability.",
+    installed: "Installed",
+    available: "Available",
+    enable: "Enable",
+    disable: "Disable",
+    install: "Install",
+    configure: "Configure",
+    configSave: "Save",
+    connect: "Connect",
+    connected: "Connected",
+    disconnect: "Disconnect",
+    connecting: "Connecting\u2026",
+    connectError: "Couldn't connect. Try again.",
+    noConfig: "Nothing to configure.",
+    noAddons: "Nothing here yet.",
+    builtin: "Built-in",
+    tools: (n: number) => `${n} ${n === 1 ? "tool" : "tools"}`,
+    permissions: (perms: string[]) => perms.length ? `Needs: ${perms.join(", ")}` : "",
+  },
+
   /* --- Diagnostics ------------------------------------------------------------------- */
   panel: {
     title: "Under the bonnet",
     note: "Not part of the product. A window onto what I'm actually seeing.",
-    mine: "Work out routines now",
     windows: "List open windows",
     trash: "Open my trash",
     state: "Show my memory file",
     reset: "Forget everything",
-    resetConfirm: "Forget every routine, run and observation, and start again?",
+    resetConfirm: "Forget everything and start again?",
     hide: "Press D to hide.",
   },
 
@@ -631,15 +590,6 @@ export const voice = {
     confidence: "Confidence",
     steps: (n: number) => `${n} ${plural(n, "step", "steps")}`,
   },
-};
-
-export const HARD_RULE_SENTENCE: Record<HardRuleKind, string> = {
-  delete: "This clears something away. I never do that quietly.",
-  irreversible: "I can't undo this one afterwards, so I'd rather you said.",
-  outside: "This is outside the folders you've allowed me.",
-  gui: "This drives another application, which I can't undo.",
-  files: "This changes files, and that isn't switched on yet.",
-  unknown: "I don't understand this one well enough to do it.",
 };
 
 export type Voice = typeof voice;

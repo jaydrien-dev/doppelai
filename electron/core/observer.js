@@ -7,7 +7,7 @@ const db = require("./db");
 const win32 = require("./win32");
 
 /**
- * What Mimic actually sees.
+ * What Doppel actually sees.
  *
  * Three sources, each behind its own permission and all behind the global
  * pause: the foreground window, changes inside the folders you've allowed, and
@@ -25,7 +25,7 @@ const CLIPBOARD_POLL_MS = 1200;
 const IGNORED = [
   /(^|[\\/])\.git([\\/]|$)/i,
   /(^|[\\/])node_modules([\\/]|$)/i,
-  /(^|[\\/])\.mimic([\\/]|$)/i,
+  /(^|[\\/])\.doppel([\\/]|$)/i,
   /(^|[\\/])~\$/,
   /\.(tmp|crdownload|part|partial|swp)$/i,
   /(^|[\\/])desktop\.ini$/i,
@@ -87,7 +87,7 @@ function startWindows() {
         title: w.title,
       });
     },
-    (err) => console.error("[mimic] window watcher:", err),
+    (err) => console.error("[doppel] window watcher:", err),
   );
 }
 
@@ -106,10 +106,10 @@ function startFiles() {
         if (ignored(full)) return;
         queueFile(root, full);
       });
-      w.on("error", (err) => console.error(`[mimic] watch ${root}:`, err.message));
+      w.on("error", (err) => console.error(`[doppel] watch ${root}:`, err.message));
       watchers.push(w);
     } catch (err) {
-      console.error(`[mimic] cannot watch ${root}:`, err.message);
+      console.error(`[doppel] cannot watch ${root}:`, err.message);
     }
   }
 }
@@ -267,4 +267,53 @@ function restart() {
   start(onEvent);
 }
 
-module.exports = { start, stop, restart, record };
+/**
+ * Startup catch-up: scan watched folders for files created or modified since
+ * the last time Doppel was running. Returns an array of events (not yet
+ * recorded — the caller decides what to do with them).
+ */
+function catchUp(since) {
+  if (!since || since <= 0) return [];
+
+  const s = db.get();
+  if (!s.permissions.files) return [];
+
+  const changes = [];
+  for (const root of s.observation.roots) {
+    if (!fs.existsSync(root)) continue;
+    scanRecent(root, root, since, changes, 0);
+  }
+
+  /* Sort by modification time so the brain sees them in order. */
+  changes.sort((a, b) => a.mtime - b.mtime);
+  return changes.slice(0, 200);
+}
+
+function scanRecent(dir, root, since, out, depth) {
+  if (depth > 3 || out.length >= 200) return;
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return; }
+  for (const name of entries) {
+    if (out.length >= 200) return;
+    const full = path.join(dir, name);
+    if (ignored(full)) continue;
+    let stat;
+    try { stat = fs.statSync(full); } catch { continue; }
+    if (stat.isDirectory()) {
+      scanRecent(full, root, since, out, depth + 1);
+    } else if (stat.mtimeMs > since) {
+      out.push({
+        kind: stat.birthtimeMs > since ? "file.created" : "file.changed",
+        path: full,
+        root,
+        dir: path.dirname(full),
+        name,
+        ext: path.extname(full).toLowerCase(),
+        size: stat.size,
+        mtime: stat.mtimeMs,
+      });
+    }
+  }
+}
+
+module.exports = { start, stop, restart, record, catchUp };

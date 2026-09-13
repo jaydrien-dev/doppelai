@@ -1,9 +1,9 @@
 {
-  "name": "mimic",
+  "name": "doppel",
   "version": "0.1.0",
   "private": true,
   "description": "A personal trusted execution engine that learns tasks by watching.",
-  "author": "Mimic",
+  "author": "Doppel",
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n next,electron -c blue,magenta \"npm:dev:next\" \"npm:dev:electron\"",
@@ -20,35 +20,83 @@
     "dist": "npm run build && electron-builder"
   },
   "build": {
-    "appId": "com.mimic.app",
-    "productName": "Mimic",
+    "appId": "com.doppel.app",
+    "productName": "Doppel",
+    "icon": "build/icon.png",
     "files": [
       "electron/**/*",
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/puppeteer/.local-chromium",
+      "!node_modules/puppeteer-core/.local-chromium",
+      "!node_modules/**/chrome-*/**"
+    ],
+    "asarUnpack": [
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*",
+      "node_modules/pdf-parse/**/*",
+      "node_modules/mammoth/**/*",
+      "electron/core/ps/**/*",
+      "electron/addons/**/*",
+      "electron/mcp-server.js"
     ],
     "directories": {
       "output": "release"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
     },
     "linux": {
       "target": "AppImage",
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "build/icon.png"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "jaydrien-dev",
+      "repo": "doppelai"
     }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "electron-updater": "^6.8.9",
     "framer-motion": "^13.0.0",
+    "mammoth": "^1.12.2",
     "next": "^16.3.0",
+    "pdf-parse": "^2.4.5",
+    "puppeteer": "^25.6.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.5.4",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

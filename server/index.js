@@ -5,7 +5,7 @@ const path = require("node:path");
 const store = require("./store");
 
 /**
- * Mimic's identity server.
+ * Doppel's identity server.
  *
  * Small on purpose. It knows who you are and which machines are yours, and
  * nothing else — no routines, no memories, no observations. The trained agent
@@ -17,10 +17,10 @@ const store = require("./store");
  * model of themselves. Running this yourself is the point.
  */
 
-const PORT = Number(process.env.MIMIC_SERVER_PORT ?? 4319);
-const HOST = process.env.MIMIC_SERVER_HOST ?? "127.0.0.1";
+const PORT = Number(process.env.DOPPEL_SERVER_PORT ?? 4319);
+const HOST = process.env.DOPPEL_SERVER_HOST ?? "127.0.0.1";
 const DATA_DIR =
-  process.env.MIMIC_SERVER_DATA ?? path.join(os.homedir(), ".mimic-identity");
+  process.env.DOPPEL_SERVER_DATA ?? path.join(os.homedir(), ".doppel-identity");
 
 /**
  * Email delivery is not wired up. Rather than pretend, the sign-in link is
@@ -96,7 +96,7 @@ const routes = {
     if (!validEmail(email)) return json(res, 400, { error: "bad_email" });
 
     const link = store.createLink(email);
-    console.log(`\n[mimic-id] sign-in link for ${store.normaliseEmail(email)}:\n  ${link}\n`);
+    console.log(`\n[doppel-id] sign-in link for ${store.normaliseEmail(email)}:\n  ${link}\n`);
 
     return json(res, 200, {
       sent: true,
@@ -238,7 +238,7 @@ const server = http.createServer(async (req, res) => {
   const key = `${req.method} ${url.pathname}`;
 
   try {
-    if (url.pathname === "/v1/health") return json(res, 200, { ok: true, service: "mimic-identity" });
+    if (url.pathname === "/v1/health") return json(res, 200, { ok: true, service: "doppel-identity" });
 
     const revoke = url.pathname.match(/^\/v1\/devices\/([\w-]+)\/revoke$/);
     if (revoke && req.method === "POST") return await revokeDeviceRoute(req, res, revoke[1]);
@@ -248,7 +248,7 @@ const server = http.createServer(async (req, res) => {
 
     return await handler(req, res);
   } catch (err) {
-    console.error("[mimic-id]", err);
+    console.error("[doppel-id]", err);
     return json(res, 400, { error: "bad_request", detail: err.message });
   }
 });
@@ -258,10 +258,10 @@ function start() {
   setInterval(() => store.prune(), 60 * 60_000);
 
   server.listen(PORT, HOST, () => {
-    console.log(`[mimic-id] listening on http://${HOST}:${PORT}`);
-    console.log(`[mimic-id] identity stored in ${DATA_DIR}`);
+    console.log(`[doppel-id] listening on http://${HOST}:${PORT}`);
+    console.log(`[doppel-id] identity stored in ${DATA_DIR}`);
     if (!EMAIL_CONFIGURED) {
-      console.log("[mimic-id] no mail provider — sign-in links are printed here");
+      console.log("[doppel-id] no mail provider — sign-in links are printed here");
     }
   });
 }

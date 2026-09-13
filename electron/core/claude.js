@@ -3,14 +3,14 @@ const Anthropic = require("@anthropic-ai/sdk");
 const db = require("./db");
 
 /**
- * Mimic's mind.
+ * Doppel's mind.
  *
  * Every call to Claude goes through here so there is exactly one place that
  * knows the model, the thinking configuration, and how the cache is laid out.
  *
  * Three things are deliberate:
  *
- *   - Opus 5 thinks by default. We never send `budget_tokens`, `temperature`,
+ *   - Sonnet 4.5 thinks by default. We never send `budget_tokens`, `temperature`,
  *     `top_p` or `top_k` — all four are rejected on this model. Depth is
  *     controlled with `effort`, chosen per job below.
  *   - The system prompt is a frozen prefix with a cache breakpoint on it, so
@@ -21,7 +21,8 @@ const db = require("./db");
  *     declined request is answered rather than dropped.
  */
 
-const MODEL = "claude-opus-5";
+const MODEL = "claude-sonnet-4-5";
+const FAST_MODEL = "claude-haiku-4-5";
 
 /** Depth per job. Watching is cheap and constant; acting is not. */
 const EFFORT = {
@@ -41,7 +42,8 @@ let clientKey = null;
 /* --------------------------------------------------------------------------- */
 
 function apiKey() {
-  const fromState = db.get().ai?.apiKey;
+  /* db.apiKey() returns the decrypted key — never read state.ai.apiKey directly. */
+  const fromState = db.apiKey();
   return (fromState || process.env.ANTHROPIC_API_KEY || "").trim();
 }
 
@@ -85,6 +87,31 @@ function thinkingOf(response) {
 
 /* --------------------------------------------------------------------------- */
 
+/** Roll the usage counters forward. Called after every API response. */
+function trackUsage(usage) {
+  if (!usage) return;
+  const month = new Date().toISOString().slice(0, 7); // "2026-09"
+
+  db.update((s) => {
+    if (!s.usage) s.usage = { current: {}, months: {} };
+    const u = s.usage;
+
+    /* If the month rolled over, archive the old one and start fresh. */
+    if (u.current.month && u.current.month !== month) {
+      u.months[u.current.month] = { ...u.current };
+      u.current = { month, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 };
+    }
+    u.current.month = month;
+    u.current.inputTokens = (u.current.inputTokens ?? 0) + (usage.input_tokens ?? 0);
+    u.current.outputTokens = (u.current.outputTokens ?? 0) + (usage.output_tokens ?? 0);
+    u.current.cacheRead = (u.current.cacheRead ?? 0) + (usage.cache_read_input_tokens ?? 0);
+    u.current.cacheCreate = (u.current.cacheCreate ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    u.current.calls = (u.current.calls ?? 0) + 1;
+  }, { silent: true });
+}
+
+/* --------------------------------------------------------------------------- */
+
 /**
  * Ask for a structured answer.
  *
@@ -102,6 +129,7 @@ async function ask({
   showThinking = false,
   betas = [],
   tools,
+  fast = false,
 }) {
   const api = anthropic();
   if (!api) return { ok: false, reason: "no-key" };
@@ -112,21 +140,19 @@ async function ask({
   systemBlocks[systemBlocks.length - 1].cache_control = { type: "ephemeral" };
 
   const request = {
-    model: MODEL,
+    model: fast ? FAST_MODEL : MODEL,
     max_tokens: maxTokens,
     system: systemBlocks,
     messages,
-    output_config: { effort },
   };
 
-  if (thinking) {
-    request.thinking = { type: "adaptive", ...(showThinking ? { display: "summarized" } : {}) };
-  } else if (["low", "medium", "high"].includes(effort)) {
-    // Disabling thinking is only legal at high effort or below.
-    request.thinking = { type: "disabled" };
+  if (thinking && maxTokens > 1024) {
+    request.thinking = { type: "enabled", budget_tokens: 1024 };
   }
 
-  if (schema) request.output_config.format = { type: "json_schema", schema };
+  if (schema) {
+    request.output_config = { format: { type: "json_schema", schema } };
+  }
   if (tools) request.tools = tools;
 
   const useBeta = betas.length > 0;
@@ -153,6 +179,8 @@ async function ask({
 }
 
 function interpret(response, schema) {
+  trackUsage(response?.usage);
+
   if (refused(response)) {
     return {
       ok: false,
@@ -186,6 +214,56 @@ function describe(err) {
 
 /* --------------------------------------------------------------------------- */
 
+/**
+ * Streaming variant of ask().
+ *
+ * Designed for the fast-answer path where the user is watching the whisper
+ * panel — tokens arrive one at a time via `onText(delta)`, so perceived
+ * latency drops from "wait 3 seconds for full response" to "first word
+ * appears in ~300ms". Returns the same shape as ask() once the stream ends.
+ */
+async function streamAsk({
+  system,
+  messages,
+  maxTokens = 1200,
+  fast = true,
+  onText,
+}) {
+  const api = anthropic();
+  if (!api) return { ok: false, reason: "no-key" };
+
+  const systemBlocks = Array.isArray(system) ? system : [{ type: "text", text: system }];
+  systemBlocks[systemBlocks.length - 1].cache_control = { type: "ephemeral" };
+
+  const request = {
+    model: fast ? FAST_MODEL : MODEL,
+    max_tokens: maxTokens,
+    system: systemBlocks,
+    messages,
+  };
+
+  try {
+    const stream = api.messages.stream(request);
+    if (onText) stream.on("text", (delta) => onText(delta));
+    const response = await stream.finalMessage();
+    trackUsage(response?.usage);
+
+    if (refused(response)) {
+      return {
+        ok: false,
+        reason: "refused",
+        detail: response.stop_details?.explanation ?? "",
+      };
+    }
+
+    return { ok: true, text: textOf(response), usage: response.usage ?? {} };
+  } catch (err) {
+    return { ok: false, reason: "error", detail: describe(err) };
+  }
+}
+
+/* --------------------------------------------------------------------------- */
+
 /** Confirm a pasted key works before the user walks away trusting it. */
 async function verifyKey(key) {
   try {
@@ -203,8 +281,11 @@ async function verifyKey(key) {
 
 module.exports = {
   MODEL,
+  FAST_MODEL,
   EFFORT,
   ask,
+  streamAsk,
+  trackUsage,
   anthropic,
   configured,
   verifyKey,

@@ -7,67 +7,66 @@ const brain = require("./brain");
 const actions = require("./actions");
 const win32 = require("./win32");
 const keys = require("./keys");
+const bgAgent = require("./bg-agent");
 
 /**
- * Mimic's hands.
+ * Doppel's hands.
  *
  * A task runs as an agent loop: Claude looks at the screen, decides on an
  * action, we carry it out, and it looks again. It has three kinds of tool —
  * the computer itself, the guarded file operations, and its own memory.
  *
- * The important design decision is that **the agent does not get its own
- * permission model**. Every file action still goes through actions.js, so the
- * folder allowlist, the trash-instead-of-delete rule, and the inverse journal
- * all apply exactly as they do to a supervised routine. Anything that trips a
- * hard rule suspends the loop and waits for a human answer — including when
- * nobody is watching, in which case it waits rather than assuming yes.
+ * Background tasks run concurrently — the user can kick off several at once
+ * and keep talking to Doppel while they work. Foreground tasks (driving the
+ * screen) are exclusive: only one at a time.
  *
- * Claude Opus 5 verifies its own work without being asked, so this prompt
- * deliberately contains no "double-check your work" instruction; adding one
- * makes it over-verify. It does contain scope discipline and a conciseness
- * instruction, both of which it needs.
+ * Every file action still goes through actions.js, so the folder allowlist,
+ * the trash-instead-of-delete rule, and the inverse journal all apply exactly
+ * as they do to a supervised routine.
  */
 
 const MAX_STEPS = 40;
-const MAX_TOKENS = 8000;
+const MAX_TOKENS = 4096;
 const COMPUTER_BETA = "computer-use-2025-11-24";
+const AGENT_MAX_EDGE = 2200;
 
-let current = null;
-let pendingApproval = null;
+/** How long a finished task stays in the list so the UI can show completion. */
+const CLEANUP_DELAY = 120_000;
+
+/* ------------------------------------------------------------ mutable state */
+
+const tasks = new Map();       // id → task object (mutated in place)
+const approvals = new Map();   // id → { resolve }
+let foregroundId = null;       // only one foreground task at a time
 let publish = () => {};
+let onComplete = () => {};
 
-const setPublisher = (fn) => {
-  publish = fn;
-};
-const snapshot = () => (current ? JSON.parse(JSON.stringify(current)) : null);
+const setPublisher = (fn) => { publish = fn; };
+const setOnComplete = (fn) => { onComplete = fn; };
+
+const snapshot = () =>
+  [...tasks.values()].map((t) => JSON.parse(JSON.stringify(t)));
+
 const emit = () => publish(snapshot());
 
 /* ------------------------------------------------------------------ prompts */
 
-const SYSTEM = `You are Mimic, an agent that works on one person's computer, on their behalf, using their own applications and their own logged-in sessions.
+const SYSTEM = `You are Doppel, an agent that drives one person's computer on their behalf — their apps, their sessions.
 
-You can see their screen and you can drive it: move the pointer, click, type, press keys, scroll. You can also move, rename, copy and archive files through a separate guarded tool, and you can search your own memory of watching this person work.
+You can see the screen and drive it: pointer, clicks, typing, keys, scroll. You also have a guarded file tool and your own memory.
+
+# CRITICAL: Verify the window before typing
+Before typing or pressing keys, take a screenshot to confirm the right window is focused. Keystrokes go to whatever is focused — typing into the wrong app ruins their work.
 
 # How to work
-Look before you act. Take a screenshot first and after anything that changes what is on screen, because the machine is not in the state you last imagined it.
+- Screenshot before and after anything that changes the screen.
+- Prefer the guarded file tool over driving a file manager by hand.
+- Work at the scope asked for. Finish the whole task. If you can't, say what's missing.
+- Destructive/irreversible actions always stop and ask — the tools handle this.
+- If stuck, stop cleanly and explain.
 
-Prefer the guarded file tool over driving a file manager by hand. It is faster, it cannot miss, and every operation it performs can be undone. Reach for the pointer and keyboard when the work genuinely lives inside an application.
-
-Work at the scope you were asked for. Interpret ambiguity the way a careful colleague would: make routine judgment calls yourself, and stop and ask only when different readings would lead to materially different work. If you think the request is mistaken or there is a better approach, say so in a sentence and carry on with what was asked — do not quietly narrow, widen, or transform it. Finish the whole task, not just the easy part, and report completion only when it is genuinely done. If you cannot finish something, do the rest and say plainly what is missing and why.
-
-# What you must not do quietly
-Some actions stop and ask every time, whatever you have been trusted with: clearing a file away, anything you cannot undo, anything outside the folders you are allowed in, and anything you do not recognise. You do not need to police these yourself — the tools will refuse and tell you — but do not design plans that depend on them going through unattended.
-
-If you get stuck, stop cleanly and say where you got to. Leaving work half-done and unreported is the worst outcome available to you; it is much better to stop early and explain.
-
-# Talking to the person
-Your text between tool calls is what they read while you work. Write it for a colleague who stepped away, not for a log file. Before your first action, say in one sentence what you are about to do. While working, speak up when you find something load-bearing or change direction — not to narrate routine clicks.
-
-Keep it brief and readable. Lead with the outcome. Do not pad with caveats or restate what you just did if the result is obvious.
-
-Voice: first person, warm, understated, slightly dry. Short sentences. Admit uncertainty freely. Never use exclamation marks or emoji, and never praise yourself.
-
-Call the finish tool when the work is done or you have stopped.`;
+# Voice
+Brief, first person, warm. Say what you'll do before your first action. No emoji. Call finish when done.`;
 
 /* -------------------------------------------------------------------- tools */
 
@@ -137,34 +136,106 @@ function toolsFor(shot) {
 
 /* ------------------------------------------------------------------ approval */
 
-/**
- * Suspend the loop until a human answers. With nobody watching this simply
- * never resolves until they come back — which is the correct behaviour for an
- * action that was defined as always needing a person.
- */
-function askPermission({ rule, detail, action }) {
-  return new Promise((resolve) => {
-    pendingApproval = { resolve };
-    current.status = "parked";
-    current.parked = { rule, detail, action, at: Date.now() };
-    emit();
-  });
+function makeAskPermission(task) {
+  return ({ rule, detail, action }) => {
+    return new Promise((resolve) => {
+      approvals.set(task.id, { resolve });
+      task.status = "parked";
+      task.parked = { rule, detail, action, at: Date.now() };
+      emit();
+    });
+  };
 }
 
-function answerApproval(choice) {
-  if (!pendingApproval) return { ok: false };
-  const { resolve } = pendingApproval;
-  pendingApproval = null;
-  current.parked = null;
-  current.status = choice === "stop" ? "stopping" : "running";
+function answerApproval(id, choice) {
+  const approval = approvals.get(id);
+  if (!approval) return { ok: false };
+  approvals.delete(id);
+  const task = tasks.get(id);
+  if (!task) return { ok: false };
+  task.parked = null;
+  task.status = choice === "stop" ? "stopping" : "running";
   emit();
-  resolve(choice);
+  approval.resolve(choice);
   return { ok: true };
+}
+
+/* ------------------------------------------------------------------ stop/fin */
+
+function makeStopFn(task) {
+  return (status, summary, detail = {}) => {
+    task.status = status;
+    task.summary = {
+      outcome: status === "finished" ? "done" : "stopped",
+      text: summary,
+      changed: detail.changed?.length ? detail.changed : task.changes,
+      incomplete: detail.incomplete ?? [],
+      durationSec: Math.round((Date.now() - task.startedAt) / 1000),
+      steps: task.step,
+    };
+    emit();
+
+    const record = {
+      id: task.id,
+      routineId: task.routineId,
+      routineTitle: task.title,
+      at: Date.now(),
+      durationSec: task.summary.durationSec,
+      corrections: 0,
+      outcome: status === "finished" ? "clean" : "stopped",
+      note: summary,
+      minutesSaved: status === "finished" ? Math.max(1, Math.round(task.summary.durationSec / 12)) : 0,
+      supervised: task.supervised,
+      unattended: !task.supervised,
+      agent: true,
+      reasoning: {
+        saw: task.mode === "foreground"
+          ? `${task.step} steps, driving the machine directly.`
+          : `${task.step} steps, working in the background.`,
+        inferred: task.instruction,
+        applied: task.recalled ? `${task.recalled} things I already knew.` : undefined,
+      },
+      steps: task.narration.map((n) => ({ label: n.text, state: "done" })),
+      changes: task.summary.changed,
+      journal: task.journal,
+      reversible: task.journal.length > 0 && !task.irreversible,
+      rolledBack: false,
+      recording: false,
+    };
+
+    db.update((s) => {
+      if (!s.runs) s.runs = [];
+      s.runs.unshift(record);
+      if (s.runs.length > 500) s.runs.length = 500;
+    });
+
+    brain.remember({
+      kind: "task",
+      at: Date.now(),
+      app: "Doppel",
+      activity: `I did this myself: ${task.instruction}`,
+      intent: summary,
+      detail: task.summary.changed.slice(0, 6).join("; "),
+      salience: status === "finished" ? 0.8 : 0.6,
+    });
+
+    onComplete();
+
+    /* Remove from the pool after a short delay so the UI can show the result. */
+    setTimeout(() => {
+      tasks.delete(task.id);
+      approvals.delete(task.id);
+      if (foregroundId === task.id) foregroundId = null;
+      emit();
+    }, CLEANUP_DELAY);
+
+    return { ok: true, summary: task.summary, runId: record.id };
+  };
 }
 
 /* ------------------------------------------------------------- tool handlers */
 
-async function runComputer(input, shot) {
+async function runComputer(input, task) {
   const state = db.get();
   if (!state.permissions.actGui) {
     return {
@@ -173,12 +244,13 @@ async function runComputer(input, shot) {
     };
   }
 
+  const shot = task.lastShot;
   const action = String(input.action ?? "");
 
   if (action === "screenshot") {
-    const next = await screenLib.capture();
+    const next = await screenLib.capture({ maxEdge: AGENT_MAX_EDGE });
     if (!next.ok) return { error: true, text: next.detail };
-    current.lastShot = next;
+    task.lastShot = next;
     return { image: next };
   }
 
@@ -277,28 +349,23 @@ async function runComputer(input, shot) {
       };
   }
 
-  /* Driving the machine cannot be undone, so the run is marked irreversible
-     the moment the first such action lands. */
-  if (action !== "wait") current.irreversible = true;
+  if (action !== "wait") task.irreversible = true;
 
   const results = await win32.act(plan);
   const failed = results.find((r) => !r.ok);
   if (failed) return { error: true, text: failed.detail };
 
-  current.changes.push(`${action}${input.text ? ` "${trim(input.text)}"` : ""}`);
+  task.changes.push(`${action}${input.text ? ` "${trim(input.text)}"` : ""}`);
 
-  /* Give the screen a beat to settle, then show the result — otherwise the
-     model reasons about a frame that no longer exists. */
-  await sleep(450);
-  const next = await screenLib.capture();
-  if (next.ok) {
-    current.lastShot = next;
+  const next = await waitForStable();
+  if (next) {
+    task.lastShot = next;
     return { image: next, text: results.map((r) => r.detail).filter(Boolean).join("; ") };
   }
   return { text: results.map((r) => r.detail).filter(Boolean).join("; ") };
 }
 
-async function runFileAction(input) {
+async function runFileAction(input, task, askPerm) {
   const action = { ...input };
   const kind = action.kind;
 
@@ -308,7 +375,7 @@ async function runFileAction(input) {
   let approved = false;
   const rule = actions.hardRuleFor(action);
   if (rule) {
-    const choice = await askPermission({
+    const choice = await askPerm({
       rule,
       detail:
         rule === "delete"
@@ -321,62 +388,66 @@ async function runFileAction(input) {
     approved = true;
   }
 
-  const result = await actions.run(action, { runId: current.id, overrides, approved });
+  const result = await actions.run(action, { runId: task.id, overrides, approved });
 
   if (result.parked) {
-    const choice = await askPermission({ rule: result.rule, detail: result.detail, action });
+    const choice = await askPerm({ rule: result.rule, detail: result.detail, action });
     if (choice === "stop") return { error: true, text: "The person stopped it here.", stop: true };
     if (choice === "skip") return { text: "Skipped — the person said no to that one." };
 
-    const retry = await actions.run(action, { runId: current.id, overrides, approved: true });
+    const retry = await actions.run(action, { runId: task.id, overrides, approved: true });
     if (!retry.ok) return { error: true, text: retry.detail };
-    absorb(retry);
+    absorb(retry, task);
     return { text: `${kind}: ${retry.detail}` };
   }
 
   if (!result.ok) return { error: true, text: result.detail };
-  absorb(result);
+  absorb(result, task);
   return { text: `${kind}: ${result.detail}` };
 }
 
-function absorb(result) {
-  current.journal.push(...(result.inverse ?? []));
-  current.changes.push(...(result.changes ?? []));
-  if (result.irreversible) current.irreversible = true;
+function absorb(result, task) {
+  task.journal.push(...(result.inverse ?? []));
+  task.changes.push(...(result.changes ?? []));
+  if (result.irreversible) task.irreversible = true;
 }
 
 async function runRecall(input) {
-  const pack = await brain.recallSemantic(input.query, { limit: 10, budgetTokens: 1500 });
+  const pack = await brain.recallSemantic(input.query, { limit: 6, budgetTokens: 1000 });
   return { text: brain.packToText(pack) };
 }
 
 /* ------------------------------------------------------------------ the loop */
 
 /**
- * Run one task to completion.
+ * Start a task. Returns immediately with { ok, taskId }.
  *
- * `instruction` is plain language — either something the user typed or the
- * intent of a learned routine.
+ * Background tasks run concurrently — start as many as you want.
+ * Foreground tasks are exclusive (only one can drive the screen).
+ *
+ * The loop runs asynchronously; progress is broadcast via the publisher.
  */
-async function run({ instruction, routineId = null, title = null, supervised = true }) {
-  if (current && !["finished", "stopped"].includes(current.status)) {
-    return { ok: false, reason: "busy" };
+async function run({ instruction, routineId = null, title = null, supervised = true, mode = "background" }) {
+  if (mode === "foreground" && foregroundId) {
+    return { ok: false, reason: "busy", detail: "A foreground task is already running." };
   }
   if (!claude.configured()) return { ok: false, reason: "no-key" };
 
-  const shot = await screenLib.capture();
-  if (!shot.ok) return { ok: false, reason: "no-screen", detail: shot.detail };
+  const screenOnly = /^(what('?s| is| am i)|(describe|read|look at|check|show))\b/i.test(instruction)
+    && /\b(screen|looking at|on my|this page|this doc)/i.test(instruction)
+    && instruction.length < 120;
 
-  /* Everything Mimic already knows that bears on this task. This is the whole
-     point of the brain — the agent starts informed rather than blank. */
-  const pack = await brain.recallSemantic(instruction, { limit: 12, budgetTokens: 2500 });
+  const pack = screenOnly
+    ? { entities: [], digests: [], episodes: [], tokens: 0 }
+    : await brain.recallSemantic(instruction, { limit: 8, budgetTokens: 1500 });
 
-  current = {
+  const task = {
     id: crypto.randomUUID(),
     routineId,
     title: title ?? instruction.slice(0, 80),
     instruction,
     status: "running",
+    mode,
     step: 0,
     startedAt: Date.now(),
     narration: [],
@@ -386,9 +457,45 @@ async function run({ instruction, routineId = null, title = null, supervised = t
     parked: null,
     summary: null,
     supervised,
-    lastShot: shot,
+    lastShot: null,
     recalled: pack.entities.length + pack.episodes.length,
   };
+
+  tasks.set(task.id, task);
+  if (mode === "foreground") foregroundId = task.id;
+  emit();
+
+  const stopFn = makeStopFn(task);
+  const askPerm = makeAskPermission(task);
+
+  if (mode === "foreground") {
+    runForeground(task, pack, instruction, stopFn, askPerm).catch((err) => {
+      stopFn("stopped", `I hit a problem: ${claude.describe(err)}`);
+    });
+  } else {
+    bgAgent.runLoop({
+      task,
+      instruction,
+      pack,
+      emit,
+      askPermission: askPerm,
+      stopFn,
+    }).catch((err) => {
+      stopFn("stopped", `I hit a problem: ${claude.describe(err)}`);
+    });
+  }
+
+  return { ok: true, taskId: task.id };
+}
+
+/**
+ * Foreground mode — drives the screen. Only one at a time.
+ */
+async function runForeground(task, pack, instruction, stopFn, askPerm) {
+  const shot = await screenLib.capture({ maxEdge: AGENT_MAX_EDGE });
+  if (!shot.ok) return stopFn("stopped", `Couldn't read the screen: ${shot.detail}`);
+
+  task.lastShot = shot;
   emit();
 
   const api = claude.anthropic();
@@ -410,85 +517,80 @@ async function run({ instruction, routineId = null, title = null, supervised = t
 
   let betas = [COMPUTER_BETA];
 
-  try {
-    while (current.step < MAX_STEPS) {
-      if (current.status === "stopping") break;
-      current.step += 1;
-      emit();
+  while (task.step < MAX_STEPS) {
+    if (task.status === "stopping") break;
+    task.step += 1;
+    emit();
 
-      const request = {
-        model: claude.MODEL,
-        max_tokens: MAX_TOKENS,
-        system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-        messages,
-        tools: toolsFor(current.lastShot),
-        thinking: { type: "adaptive" },
-        output_config: { effort: claude.EFFORT.act },
-      };
+    const request = {
+      model: claude.MODEL,
+      max_tokens: MAX_TOKENS,
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      messages,
+      tools: toolsFor(task.lastShot),
+      thinking: { type: "enabled", budget_tokens: 1024 },
+    };
 
-      let response;
-      try {
-        response = await api.beta.messages.create({ ...request, betas });
-      } catch (err) {
-        /* If this deployment doesn't know the computer-use beta string, say so
-           once and carry on without it rather than failing the whole task. */
-        if (err?.status === 400 && betas.length) {
-          betas = [];
-          response = await api.beta.messages.create({ ...request, betas: [] });
-        } else {
-          throw err;
-        }
+    let response;
+    try {
+      response = await api.beta.messages.create({ ...request, betas });
+    } catch (err) {
+      if (err?.status === 400 && betas.length) {
+        betas = [];
+        response = await api.beta.messages.create({ ...request, betas: [] });
+      } else {
+        throw err;
       }
-
-      if (claude.refused(response)) {
-        return stop("stopped", "I was declined on that one, so I've left it alone.");
-      }
-
-      messages.push({ role: "assistant", content: response.content });
-
-      const said = claude.textOf(response);
-      if (said) {
-        current.narration.push({ at: Date.now(), text: said });
-        emit();
-      }
-
-      const calls = response.content.filter((b) => b.type === "tool_use");
-      if (calls.length === 0) break;
-
-      const finish = calls.find((c) => c.name === "finish");
-      if (finish) {
-        return stop(
-          finish.input.outcome === "done" ? "finished" : "stopped",
-          finish.input.summary,
-          finish.input,
-        );
-      }
-
-      const results = [];
-      for (const call of calls) {
-        const outcome = await execute(call);
-        if (outcome.stop) return stop("stopped", "Stopped where the person asked.");
-        results.push(toResult(call.id, outcome));
-      }
-
-      messages.push({ role: "user", content: results });
     }
 
-    return stop(
-      "stopped",
-      current.step >= MAX_STEPS
-        ? "I've used up the steps I allow myself for one task. Stopping here rather than grinding on."
-        : "I stopped without a clear finish.",
-    );
-  } catch (err) {
-    return stop("stopped", `I hit a problem: ${claude.describe(err)}`);
+    claude.trackUsage(response?.usage);
+
+    if (claude.refused(response)) {
+      return stopFn("stopped", "I was declined on that one, so I've left it alone.");
+    }
+
+    messages.push({ role: "assistant", content: response.content });
+
+    const said = claude.textOf(response);
+    if (said) {
+      task.narration.push({ at: Date.now(), text: said });
+      emit();
+    }
+
+    const calls = response.content.filter((b) => b.type === "tool_use");
+    if (calls.length === 0) break;
+
+    const finish = calls.find((c) => c.name === "finish");
+    if (finish) {
+      return stopFn(
+        finish.input.outcome === "done" ? "finished" : "stopped",
+        finish.input.summary,
+        finish.input,
+      );
+    }
+
+    const results = [];
+    for (const call of calls) {
+      const outcome = await executeFg(call, task, askPerm);
+      if (outcome.stop) return stopFn("stopped", "Stopped where the person asked.");
+      results.push(toResult(call.id, outcome));
+    }
+
+    messages.push({ role: "user", content: results });
   }
+
+  return stopFn(
+    "stopped",
+    task.step >= MAX_STEPS
+      ? "I've used up the steps I allow myself for one task. Stopping here rather than grinding on."
+      : "I stopped without a clear finish.",
+  );
 }
 
-async function execute(call) {
+async function executeFg(call, task, askPerm) {
   try {
-    if (call.name === "computer") return await runComputer(call.input, current.lastShot);
-    if (call.name === "file_action") return await runFileAction(call.input);
+    if (call.name === "computer") return await runComputer(call.input, task);
+    if (call.name === "file_action") return await runFileAction(call.input, task, askPerm);
     if (call.name === "recall") return await runRecall(call.input);
     return { error: true, text: `I don't have a tool called ${call.name}.` };
   } catch (err) {
@@ -510,70 +612,22 @@ function toResult(id, outcome) {
   };
 }
 
-function stop(status, summary, detail = {}) {
-  if (!current) return { ok: false };
-
-  current.status = status;
-  current.summary = {
-    outcome: status === "finished" ? "done" : "stopped",
-    text: summary,
-    changed: detail.changed?.length ? detail.changed : current.changes,
-    incomplete: detail.incomplete ?? [],
-    durationSec: Math.round((Date.now() - current.startedAt) / 1000),
-    steps: current.step,
-  };
-  emit();
-
-  const record = {
-    id: current.id,
-    routineId: current.routineId,
-    routineTitle: current.title,
-    at: Date.now(),
-    durationSec: current.summary.durationSec,
-    corrections: 0,
-    outcome: status === "finished" ? "clean" : "stopped",
-    note: summary,
-    minutesSaved: status === "finished" ? Math.max(1, Math.round(current.summary.durationSec / 12)) : 0,
-    supervised: current.supervised,
-    unattended: !current.supervised,
-    agent: true,
-    reasoning: {
-      saw: `${current.step} steps, driving the machine directly.`,
-      inferred: current.instruction,
-      applied: current.recalled ? `${current.recalled} things I already knew.` : undefined,
-    },
-    steps: current.narration.map((n) => ({ label: n.text, state: "done" })),
-    changes: current.summary.changed,
-    journal: current.journal,
-    reversible: current.journal.length > 0 && !current.irreversible,
-    rolledBack: false,
-    recording: false,
-  };
-
-  db.update((s) => {
-    s.runs.unshift(record);
-    if (s.runs.length > 500) s.runs.length = 500;
-  });
-
-  /* What it just did is itself worth remembering. */
-  brain.remember({
-    kind: "task",
-    at: Date.now(),
-    app: "Mimic",
-    activity: `I did this myself: ${current.instruction}`,
-    intent: summary,
-    detail: current.summary.changed.slice(0, 6).join("; "),
-    salience: status === "finished" ? 0.8 : 0.6,
-  });
-
-  return { ok: true, summary: current.summary, runId: record.id };
-}
-
-function abort() {
-  if (!current) return;
-  if (pendingApproval) answerApproval("stop");
-  current.status = "stopping";
-  emit();
+function abort(id) {
+  if (id) {
+    const task = tasks.get(id);
+    if (!task) return;
+    if (approvals.has(id)) answerApproval(id, "stop");
+    task.status = "stopping";
+    emit();
+  } else {
+    for (const [tid, task] of tasks) {
+      if (!["finished", "stopped"].includes(task.status)) {
+        if (approvals.has(tid)) answerApproval(tid, "stop");
+        task.status = "stopping";
+      }
+    }
+    emit();
+  }
 }
 
 /* --------------------------------------------------------------------------- */
@@ -582,4 +636,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const trim = (s, n = 40) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
 const short = (p) => (p ? String(p).split(/[\\/]/).pop() : "somewhere");
 
-module.exports = { run, abort, answerApproval, snapshot, setPublisher, MAX_STEPS };
+async function waitForStable() {
+  const hashShot = (shot) =>
+    crypto.createHash("md5").update(shot.base64).digest("hex");
+
+  await sleep(150);
+  let prev = await screenLib.capture({ maxEdge: AGENT_MAX_EDGE });
+  if (!prev.ok) return null;
+  let prevHash = hashShot(prev);
+
+  for (let i = 0; i < 4; i++) {
+    await sleep(200);
+    const next = await screenLib.capture({ maxEdge: AGENT_MAX_EDGE });
+    if (!next.ok) return prev;
+    const nextHash = hashShot(next);
+    if (nextHash === prevHash) return next;
+    prev = next;
+    prevHash = nextHash;
+  }
+  return prev;
+}
+
+module.exports = { run, abort, answerApproval, snapshot, setPublisher, setOnComplete, MAX_STEPS };

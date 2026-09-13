@@ -6,7 +6,7 @@ import type { AppId } from "@/lib/types";
 import { Mascot, type Mood } from "./Mascot";
 
 /**
- * A window Mimic can be inside. The mascot perches on top of whichever one is
+ * A window Doppel can be inside. The mascot perches on top of whichever one is
  * active — pass `perch` and Framer carries it here from wherever it was.
  */
 export function AppTile({
@@ -33,7 +33,7 @@ export function AppTile({
         className="pointer-events-none absolute left-1/2 z-10 -translate-x-1/2"
         style={{ bottom: size - 6 }}
       >
-        {perch && <Mascot layoutId="mimic-mascot" mood={perchMood} size="sm" />}
+        {perch && <Mascot layoutId="doppel-mascot" mood={perchMood} size="sm" />}
       </div>
 
       <div

@@ -1,0 +1,67 @@
+{
+  "id": "microsoft-mail",
+  "name": "Outlook Mail",
+  "description": "Read your inbox, search emails, and send messages through Outlook / Microsoft 365.",
+  "version": "0.1.0",
+  "author": "Doppel",
+  "icon": "mail",
+  "category": "productivity",
+  "type": "api",
+  "builtin": true,
+  "permissions": ["email"],
+  "config": [],
+  "auth": {
+    "provider": "microsoft",
+    "clientId": "DOPPEL_AZURE_CLIENT_ID",
+    "authUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "scopes": [
+      "User.Read",
+      "Mail.Read",
+      "Mail.Send",
+      "offline_access"
+    ]
+  },
+  "tools": [
+    {
+      "name": "outlook_inbox",
+      "description": "Read recent Outlook inbox messages. Returns sender, subject, date, and a preview.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": { "type": "number", "description": "Number of messages. Default: 10, max: 30." },
+          "unread_only": { "type": "boolean", "description": "Only unread messages. Default: false." }
+        }
+      }
+    },
+    {
+      "name": "outlook_search",
+      "description": "Search Outlook inbox by keyword or sender.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Keyword to search for." },
+          "count": { "type": "number", "description": "Max results. Default: 10." }
+        }
+      }
+    },
+    {
+      "name": "outlook_send",
+      "description": "Send an email through Outlook. Confirm with the person before sending.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["to", "subject", "body"],
+        "properties": {
+          "to": { "type": "string", "description": "Recipient email address(es), comma-separated." },
+          "cc": { "type": "string", "description": "CC address(es), comma-separated." },
+          "subject": { "type": "string", "description": "Subject line." },
+          "body": { "type": "string", "description": "Email body text." }
+        }
+      }
+    }
+  ]
+}

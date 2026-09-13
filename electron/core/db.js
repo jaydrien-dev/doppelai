@@ -3,8 +3,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 
+/* Lazy-loaded to avoid circular dependency — vault.init needs db.paths. */
+let vault = null;
+function getVault() {
+  if (!vault) vault = require("./vault");
+  return vault;
+}
+
 /**
- * Mimic's memory. A single JSON document written atomically to the user's
+ * Doppel's memory. A single JSON document written atomically to the user's
  * application data folder — no server, no database, nothing leaves the machine.
  *
  * There is deliberately no seed data. A fresh install knows nothing and has to
@@ -23,7 +30,7 @@ function home(...parts) {
   return path.join(os.homedir(), ...parts);
 }
 
-/** Folders Mimic watches out of the box. All inside the user's own home. */
+/** Folders Doppel watches out of the box. All inside the user's own home. */
 function defaultRoots() {
   return [home("Downloads"), home("Desktop"), home("Documents")].filter((p) =>
     fs.existsSync(p),
@@ -37,8 +44,10 @@ function emptyState() {
 
     observation: {
       paused: false,
-      /** Folders Mimic may watch and act within. Nothing outside these is touched. */
+      /** Folders Doppel may watch and act within. Nothing outside these is touched. */
       roots: defaultRoots(),
+      /** Which display to watch. Null = primary. */
+      displayId: null,
     },
 
     permissions: {
@@ -72,12 +81,27 @@ function emptyState() {
        *   thorough  every word, number and control it can make out, ~2200px
        */
       detail: "thorough",
+      /** OpenAI key for Whisper transcription. */
+      openaiKey: "",
     },
 
     /** The little presence in the corner. */
     overlay: {
       enabled: true,
       position: null,
+    },
+
+    /** The voice hotkey panel. */
+    whisper: {
+      enabled: true,
+      hotkey: "Ctrl+Shift+Space",
+      position: null,
+      autoDismiss: 0,
+    },
+
+    /** Proactive suggestions surfaced by the nudge system. */
+    nudges: {
+      enabled: true,
     },
 
     /**
@@ -100,26 +124,36 @@ function emptyState() {
     /** Raw observations, capped. This is the evidence everything else derives from. */
     events: [],
 
-    /** What Mimic has said about what it's seeing, newest first. */
+    /** What Doppel has said about what it's seeing, newest first. */
     narration: [],
 
-    routines: [],
-    runs: [],
     entities: [],
-    jobs: [],
-
-    away: {
-      active: false,
-      grantedAt: 0,
-      expiresAt: 0,
-      routineIds: [],
-      actionCap: 12,
-      actionsUsed: 0,
-      keepAlive: true,
-    },
 
     devices: [],
-    stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0 },
+    stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0, lastRunAt: 0 },
+
+    /** Installed add-ons and their configuration. */
+    addons: { installed: {} },
+
+    /** Learned routines — patterns Doppel has detected and the user accepted. */
+    routines: [],
+
+    /** Pattern IDs the user declined, so we don't propose them again. */
+    rejectedPatterns: [],
+
+    /** Security — biometric lock, etc. */
+    security: {
+      /** Require Windows Hello to unlock Doppel. */
+      biometric: false,
+      /** Minutes of inactivity before re-locking. 0 = session only. */
+      lockTimeout: 0,
+    },
+
+    /** API usage metering — accumulated per calendar month. */
+    usage: {
+      current: { month: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 },
+      months: {},
+    },
   };
 }
 
@@ -136,7 +170,14 @@ function migrate(loaded) {
       permissions: { ...base.permissions, ...(loaded.permissions ?? {}) },
       ai: { ...base.ai, ...(loaded.ai ?? {}) },
       overlay: { ...base.overlay, ...(loaded.overlay ?? {}) },
+      whisper: { ...base.whisper, ...(loaded.whisper ?? {}) },
+      nudges: { ...base.nudges, ...(loaded.nudges ?? {}) },
       account: { ...base.account, ...(loaded.account ?? {}) },
+      addons: { ...base.addons, ...(loaded.addons ?? {}) },
+      security: { ...base.security, ...(loaded.security ?? {}) },
+      usage: { ...base.usage, ...(loaded.usage ?? {}) },
+      routines: loaded.routines ?? [],
+      rejectedPatterns: loaded.rejectedPatterns ?? [],
     };
   }
   return {
@@ -145,23 +186,76 @@ function migrate(loaded) {
     permissions: { ...base.permissions, ...loaded.permissions },
     ai: { ...base.ai, ...(loaded.ai ?? {}) },
     overlay: { ...base.overlay, ...(loaded.overlay ?? {}) },
+    whisper: { ...base.whisper, ...(loaded.whisper ?? {}) },
+    nudges: { ...base.nudges, ...(loaded.nudges ?? {}) },
     account: { ...base.account, ...(loaded.account ?? {}) },
     stats: { ...base.stats, ...(loaded.stats ?? {}) },
+    addons: { ...base.addons, ...(loaded.addons ?? {}) },
+    security: { ...base.security, ...(loaded.security ?? {}) },
+    usage: { ...base.usage, ...(loaded.usage ?? {}) },
+    routines: loaded.routines ?? [],
+    rejectedPatterns: loaded.rejectedPatterns ?? [],
   };
 }
 
 function init() {
   dir = app.getPath("userData");
-  file = path.join(dir, "mimic-state.json");
+  file = path.join(dir, "doppel-state.json");
   fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(path.join(dir, "trash"), { recursive: true });
+
+  /* Initialise the vault for encrypting secrets and brain data. */
+  const v = getVault();
+  if (!v.ready()) v.init(dir);
 
   try {
     state = migrate(JSON.parse(fs.readFileSync(file, "utf8")));
   } catch {
     state = emptyState();
   }
+
+  /* Migrate plaintext API keys to encrypted storage. A key that isn't
+     empty and isn't already a base64 safeStorage blob gets encrypted
+     in place on first read after the update. */
+  migrateSecrets(state);
+
   return state;
+}
+
+function migrateSecrets(s) {
+  const v = getVault();
+  if (!s.ai) return;
+
+  /* Anthropic key — starts with "sk-ant-" when plaintext. */
+  if (s.ai.apiKey && s.ai.apiKey.startsWith("sk-")) {
+    s.ai.apiKey = v.encryptSecret(s.ai.apiKey);
+    schedule(); // persist the encrypted version
+  }
+
+  /* OpenAI key — starts with "sk-" when plaintext. */
+  if (s.ai.openaiKey && s.ai.openaiKey.startsWith("sk-")) {
+    s.ai.openaiKey = v.encryptSecret(s.ai.openaiKey);
+    schedule();
+  }
+}
+
+/**
+ * Decrypt the Anthropic API key. Never read `state.ai.apiKey` directly
+ * from outside db.js — use this instead.
+ */
+function apiKey() {
+  const raw = get().ai?.apiKey ?? "";
+  if (!raw) return "";
+  return getVault().decryptSecret(raw);
+}
+
+/**
+ * Decrypt the OpenAI API key.
+ */
+function openaiKey() {
+  const raw = get().ai?.openaiKey ?? "";
+  if (!raw) return "";
+  return getVault().decryptSecret(raw);
 }
 
 function get() {
@@ -177,7 +271,7 @@ function flush() {
     fs.writeFileSync(tmp, JSON.stringify(state), "utf8");
     fs.renameSync(tmp, file);
   } catch (err) {
-    console.error("[mimic] could not save state:", err.message);
+    console.error("[doppel] could not save state:", err.message);
   }
 }
 
@@ -207,7 +301,7 @@ function notify() {
     try {
       fn(snapshot);
     } catch (err) {
-      console.error("[mimic] listener failed:", err.message);
+      console.error("[doppel] listener failed:", err.message);
     }
   }
 }
@@ -223,7 +317,8 @@ function subscribe(fn) {
  */
 function publicState() {
   const s = get();
-  const key = s.ai?.apiKey ?? "";
+  const key = apiKey();
+  const oaiKey = openaiKey();
   return {
     version: s.version,
     createdAt: s.createdAt,
@@ -239,8 +334,12 @@ function publicState() {
       autoWatch: s.ai?.autoWatch !== false,
       detail: s.ai?.detail === "light" ? "light" : "thorough",
       hint: key ? `…${key.slice(-6)}` : "",
+      openaiConfigured: Boolean(oaiKey || process.env.OPENAI_API_KEY),
+      openaiHint: oaiKey ? `…${oaiKey.slice(-6)}` : "",
     },
     overlay: s.overlay,
+    whisper: s.whisper,
+    nudgeSettings: s.nudges,
     /* Identity, minus the credential itself. */
     account: {
       signedIn: Boolean(s.account?.token),
@@ -253,15 +352,18 @@ function publicState() {
       lastError: s.account?.lastError ?? null,
       server: s.account?.server ?? "",
     },
-    routines: s.routines,
-    runs: s.runs.slice(0, 200),
     entities: s.entities,
-    jobs: s.jobs,
-    away: s.away,
     devices: s.devices,
     stats: s.stats,
+    addons: s.addons ?? { installed: {} },
+    security: {
+      biometric: Boolean(s.security?.biometric),
+      lockTimeout: s.security?.lockTimeout ?? 0,
+    },
+    usage: s.usage,
     narration: (s.narration ?? []).slice(0, 40),
     recentEvents: s.events.slice(-40).reverse(),
+    routines: s.routines ?? [],
   };
 }
 
@@ -295,5 +397,7 @@ module.exports = {
   flush,
   defaultRoots,
   paths,
+  apiKey,
+  openaiKey,
   STATE_VERSION,
 };

@@ -1,6 +1,6 @@
 import type { AppId } from "./types";
 
-/** The applications Mimic is seen working inside. The mascot perches on these. */
+/** The applications Doppel is seen working inside. The mascot perches on these. */
 export const APPS: Record<AppId, { name: string; short: string }> = {
   sheet: { name: "Numbers", short: "Sheet" },
   mail: { name: "Mail", short: "Mail" },

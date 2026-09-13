@@ -14,7 +14,7 @@ const SIZES = {
 export type MascotSize = keyof typeof SIZES;
 
 /**
- * Mimic itself. A small soft creature pressed out of the same surface as
+ * Doppel itself. A small soft creature pressed out of the same surface as
  * everything else — one blue visor, two nubs, a shadow it never quite lands on.
  *
  * Pass `layoutId` and render it inside whichever app tile it is working in;
@@ -185,7 +185,7 @@ export function Mascot({
           className="pointer-events-none absolute inset-0 rounded-[50%]"
           style={{
             boxShadow: "0 0 0 1.5px var(--primary-glow)",
-            animation: "mimic-ring 2.4s var(--ease-calm) infinite",
+            animation: "doppel-ring 2.4s var(--ease-calm) infinite",
           }}
         />
       )}

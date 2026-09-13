@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 /**
- * The vector store behind Mimic's memory.
+ * The vector store behind Doppel's memory.
  *
  * Memories are kept as meaning, not prose. Each episode is embedded once with a
  * small model that runs entirely on this machine — no embedding service, no
@@ -70,7 +70,7 @@ async function ready() {
       return extractor;
     } catch (err) {
       unavailable = err?.message ?? String(err);
-      console.error("[mimic] no embedding model, memory falls back to words:", unavailable);
+      console.error("[doppel] no embedding model, memory falls back to words:", unavailable);
       return null;
     } finally {
       loading = null;
@@ -189,7 +189,7 @@ function flush() {
     fs.renameSync(`${metaFile}.tmp`, metaFile);
     dirty = false;
   } catch (err) {
-    console.error("[mimic] could not save vectors:", err.message);
+    console.error("[doppel] could not save vectors:", err.message);
   }
 }
 

@@ -4,27 +4,31 @@ import { create } from "zustand";
 import type {
   AccountOverview,
   AccountState,
-  ActiveRun,
+  AddonInfo,
+  AgentRun,
   AgentTask,
-  AwayAuthorization,
   BrainEntity,
   BrainEpisode,
+  BrainPattern,
   BrainStats,
   ContextPack,
   Entity,
-  MimicSnapshot,
+  DoppelSnapshot,
+  MorningBrief,
   NarrationLine,
+  Nudge,
   ObservedEvent,
   Permissions,
-  PocketJob,
+  RecordedProcedure,
+  RecordingSession,
   Routine,
-  RunRecord,
-  Stage,
+  RoutineProposal,
+  SecurityState,
+  WhisperState,
 } from "./types";
-import { unattendedEligible } from "./plan";
 
 /**
- * The interface's view of Mimic.
+ * The interface's view of Doppel.
  *
  * There is no truth in here. Everything below is either something the main
  * process reported, or an intention being sent to it. That is deliberate: the
@@ -34,14 +38,13 @@ import { unattendedEligible } from "./plan";
 
 declare global {
   interface Window {
-    mimic?: MimicBridge;
+    doppel?: DoppelBridge;
   }
 }
 
-export interface MimicBridge {
+export interface DoppelBridge {
   isDesktop: boolean;
   platform: string;
-  openPocket: () => Promise<unknown>;
   closeWindow: () => Promise<unknown>;
 
   /* the overlay */
@@ -50,6 +53,12 @@ export interface MimicBridge {
   overlayToggleWatch: () => Promise<boolean>;
   overlaySetEnabled: (on: boolean) => Promise<unknown>;
   overlayHome: () => Promise<unknown>;
+
+  /* the whisper panel */
+  whisperSetEnabled: (on: boolean) => Promise<unknown>;
+  whisperHome: () => Promise<unknown>;
+  whisperSetAutoDismiss: (sec: number) => Promise<unknown>;
+  whisperHide: () => Promise<unknown>;
 
   /* the account */
   requestLink: (email: string) => Promise<{ ok: boolean; error?: string; link?: string }>;
@@ -68,23 +77,62 @@ export interface MimicBridge {
   exportAccount: () => Promise<{ ok: boolean; file?: string }>;
   deleteAccount: () => Promise<{ ok: boolean }>;
 
-  getState: () => Promise<MimicSnapshot>;
-  getRun: () => Promise<ActiveRun | null>;
-  onState: (fn: (s: MimicSnapshot) => void) => () => void;
-  onRun: (fn: (r: ActiveRun | null) => void) => () => void;
-  onAgent: (fn: (t: AgentTask | null) => void) => () => void;
+  getState: () => Promise<DoppelSnapshot>;
+  onState: (fn: (s: DoppelSnapshot) => void) => () => void;
+  onAgent: (fn: (t: AgentTask[]) => void) => () => void;
   onNarration: (fn: (line: NarrationLine) => void) => () => void;
+  onNudge: (fn: (nudges: Nudge[]) => void) => () => void;
+  onAnswerStream: (fn: (delta: string) => void) => () => void;
+  getNudges: () => Promise<Nudge[]>;
+  dismissNudge: (id: string) => Promise<unknown>;
+  actOnNudge: (id: string) => Promise<{ ok: boolean; nudge?: Nudge }>;
+  nudgeSetEnabled: (on: boolean) => Promise<unknown>;
+
+  /* security / biometric */
+  securityAvailable: () => Promise<{ available: boolean; detail?: string }>;
+  securityStatus: () => Promise<{ available: boolean; enabled: boolean; locked: boolean; lockTimeout: number }>;
+  securityVerify: () => Promise<{ ok: boolean; method?: string; detail?: string }>;
+  securitySetBiometric: (on: boolean) => Promise<{ ok: boolean; detail?: string }>;
+  securitySetLockTimeout: (min: number) => Promise<unknown>;
+  securityLock: () => Promise<unknown>;
+  onUnlocked: (fn: (unlocked: boolean) => void) => () => void;
+
+  /* updates */
+  getUpdateStatus: () => Promise<{ state: string; version?: string | null; progress?: number | null }>;
+  checkForUpdate: () => Promise<unknown>;
+  installUpdate: () => Promise<unknown>;
+  onUpdate: (fn: (status: { state: string; version?: string | null; progress?: number | null }) => void) => () => void;
 
   /* the mind */
   setApiKey: (key: string) => Promise<{ ok: boolean; detail?: string }>;
   clearApiKey: () => Promise<unknown>;
+  setOpenAIKey: (key: string) => Promise<{ ok: boolean; detail?: string }>;
+  clearOpenAIKey: () => Promise<unknown>;
+  transcribeAudio: (buffer: ArrayBuffer, prompt?: string) => Promise<{ ok: boolean; text?: string; detail?: string }>;
+  whisperAsk: (buffer: ArrayBuffer, history?: { role: string; content: string }[]) => Promise<{
+    ok: boolean;
+    transcript?: string;
+    text?: string;
+    empty?: boolean;
+    phase?: string;
+    detail?: string;
+    isInstruction?: boolean;
+  }>;
   setAutoWatch: (on: boolean) => Promise<unknown>;
   setDetail: (level: "light" | "thorough") => Promise<unknown>;
   lookNow: () => Promise<{ ok: boolean; reason?: string; detail?: string }>;
 
   /* the brain */
   recall: (query: string) => Promise<{ pack: ContextPack; text: string }>;
-  askBrain: (question: string) => Promise<{
+  askBrainFast: (question: string, history?: { role: string; content: string }[]) => Promise<{
+    ok: boolean;
+    text?: string;
+    empty?: boolean;
+    reason?: string;
+    detail?: string;
+    pack?: ContextPack;
+  }>;
+  askBrain: (question: string, history?: { role: string; content: string }[]) => Promise<{
     ok: boolean;
     text?: string;
     empty?: boolean;
@@ -95,67 +143,77 @@ export interface MimicBridge {
   forgetMoments: (ids: string[]) => Promise<unknown>;
   brainEntities: () => Promise<BrainEntity[]>;
   brainEpisodes: (limit?: number) => Promise<BrainEpisode[]>;
+  brainAvailableDates: () => Promise<string[]>;
+  brainEpisodesForDate: (date: string) => Promise<BrainEpisode[]>;
+  brainPatterns: () => Promise<BrainPattern[]>;
+  morningBrief: () => Promise<{ ok: boolean; brief?: MorningBrief; cached?: boolean; reason?: string; detail?: string }>;
+  morningBriefCached: () => Promise<{ ok: boolean; brief?: MorningBrief }>;
   brainStats: () => Promise<BrainStats>;
   brainForget: (id: string) => Promise<unknown>;
   consolidate: (scope: "hour" | "day") => Promise<{ ok: boolean; reason?: string }>;
+  exportBrain: () => Promise<{ ok: boolean; file?: string; reason?: string; detail?: string; stats?: { totalEpisodes: number; totalEntities: number; totalDigests: number } }>;
   wipeBrain: () => Promise<unknown>;
+  ingestDocument: (filePath?: string) => Promise<{ ok: boolean; episodes?: number; files?: string[]; title?: string; detail?: string }>;
+  ingestSupported: () => Promise<string[]>;
+
+  /* workflow recording */
+  recorderStart: (title?: string) => Promise<{ ok: boolean; sessionId?: string; detail?: string }>;
+  recorderStop: () => Promise<{
+    ok: boolean;
+    sessionId?: string;
+    procedure?: RecordedProcedure;
+    episodeCount?: number;
+    durationSec?: number;
+    detail?: string;
+  }>;
+  recorderActive: () => Promise<RecordingSession | null>;
+  recorderAbort: () => Promise<{ ok: boolean }>;
+  recorderSave: (procedure: RecordedProcedure) => Promise<{ ok: boolean; routine?: Routine }>;
+
+  /* routines */
+  listRoutines: () => Promise<Routine[]>;
+  routineProposals: () => Promise<RoutineProposal[]>;
+  acceptRoutine: (patternId: string) => Promise<{ ok: boolean; routine?: Routine }>;
+  rejectRoutine: (patternId: string) => Promise<{ ok: boolean }>;
+  removeRoutine: (routineId: string) => Promise<{ ok: boolean }>;
+  toggleRoutine: (routineId: string) => Promise<{ ok: boolean }>;
+  runRoutineNow: (routineId: string) => Promise<{ ok: boolean; taskId?: string }>;
 
   /* the agent */
-  getAgent: () => Promise<AgentTask | null>;
+  getAgent: () => Promise<AgentTask[]>;
+  agentHistory: (limit?: number) => Promise<AgentRun[]>;
   runAgent: (input: {
     instruction: string;
     routineId?: string | null;
     title?: string;
-  }) => Promise<{ ok: boolean; reason?: string; detail?: string }>;
-  answerAgent: (choice: "approve" | "skip" | "stop") => Promise<unknown>;
-  abortAgent: () => Promise<unknown>;
+    mode?: "background" | "foreground";
+  }) => Promise<{ ok: boolean; taskId?: string; reason?: string; detail?: string }>;
+  answerAgent: (id: string, choice: "approve" | "skip" | "stop") => Promise<unknown>;
+  abortAgent: (id?: string) => Promise<unknown>;
 
   setPaused: (paused: boolean) => Promise<unknown>;
   setPermissions: (patch: Partial<Permissions>) => Promise<unknown>;
   addRoot: () => Promise<{ ok: boolean; root?: string }>;
   removeRoot: (root: string) => Promise<unknown>;
+  listDisplays: () => Promise<{ id: string; label: string; width: number; height: number; primary: boolean }[]>;
+  setDisplay: (displayId: string | null) => Promise<unknown>;
 
-  armTeaching: () => Promise<unknown>;
-  cancelTeaching: () => Promise<unknown>;
-  finishTeaching: () => Promise<{ ok: boolean; reason?: string; routineId?: string; confidence?: number }>;
-  mineNow: () => Promise<unknown>;
+  /* add-ons */
+  listAddons: () => Promise<AddonInfo[]>;
+  installAddon: (id: string) => Promise<{ ok: boolean }>;
+  uninstallAddon: (id: string) => Promise<{ ok: boolean }>;
+  enableAddon: (id: string) => Promise<{ ok: boolean }>;
+  disableAddon: (id: string) => Promise<{ ok: boolean }>;
+  setAddonConfig: (id: string, key: string, value: string) => Promise<{ ok: boolean }>;
+  addonAuth: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  addonDisconnect: (id: string) => Promise<{ ok: boolean }>;
 
-  setProvingRuns: (id: string, n: number) => Promise<unknown>;
-  graduate: (id: string) => Promise<unknown>;
-  grantUnattended: (id: string) => Promise<unknown>;
-  revokeUnattended: (id: string) => Promise<unknown>;
-  demote: (id: string) => Promise<unknown>;
-  relearn: (id: string) => Promise<unknown>;
-  dismissDrift: (id: string) => Promise<unknown>;
-  forgetRoutine: (id: string) => Promise<unknown>;
+  /* resume */
+  resumeLast: () => Promise<{ ok: boolean; app?: string; title?: string; reason?: string }>;
 
-  startRun: (id: string, opts?: { supervised?: boolean }) => Promise<unknown>;
-  pauseRun: () => Promise<unknown>;
-  resumeRun: () => Promise<unknown>;
-  stepBack: () => Promise<unknown>;
-  openCorrection: () => Promise<unknown>;
-  closeCorrection: () => Promise<unknown>;
-  correct: (patch: CorrectionPatch) => Promise<unknown>;
-  resolvePark: (choice: "approve" | "skip" | "stop") => Promise<unknown>;
-  yieldRun: () => Promise<unknown>;
-  resolveYield: (choice: "resume" | "handover" | "stop") => Promise<unknown>;
-  abortRun: () => Promise<unknown>;
-
-  rollback: (runId: string) => Promise<{ ok: boolean; detail?: string }>;
-  exportWeek: () => Promise<{ ok: boolean; file?: string }>;
-  revealTrash: () => Promise<unknown>;
-
-  grantAway: (input: {
-    routineIds: string[];
-    actionCap: number;
-    hours: number;
-    keepAlive: boolean;
-  }) => Promise<unknown>;
-  endAway: () => Promise<unknown>;
-  dispatch: (routineId: string) => Promise<unknown>;
-  answerJob: (jobId: string, choice: "approve" | "skip" | "later") => Promise<unknown>;
-  stopAll: () => Promise<unknown>;
-  clearJobs: () => Promise<unknown>;
+  /* MCP integration */
+  mcpConnectClaude: () => Promise<{ ok: boolean; path?: string; detail?: string }>;
+  mcpCheckClaude: () => Promise<{ connected: boolean }>;
 
   forgetEntity: (id: string) => Promise<unknown>;
   listWindows: () => Promise<{ title: string; procId: number }[]>;
@@ -164,18 +222,10 @@ export interface MimicBridge {
   revealPath: (target: string) => Promise<unknown>;
 }
 
-export interface CorrectionPatch {
-  stepId: string;
-  value?: string;
-  pattern?: string;
-  skip?: boolean;
-  move?: "earlier" | "later";
-}
-
-const emptySnapshot = (): MimicSnapshot => ({
+const emptySnapshot = (): DoppelSnapshot => ({
   version: 0,
   createdAt: Date.now(),
-  observation: { paused: false, roots: [] },
+  observation: { paused: false, roots: [], displayId: null },
   permissions: {
     windows: true,
     files: true,
@@ -195,8 +245,11 @@ const emptySnapshot = (): MimicSnapshot => ({
     autoWatch: true,
     detail: "thorough",
     hint: "",
+    openaiConfigured: false,
+    openaiHint: "",
   },
   overlay: { enabled: true, position: null },
+  whisper: { enabled: true, hotkey: "Ctrl+Shift+Space", position: null, autoDismiss: 0 },
   account: {
     signedIn: false,
     email: null,
@@ -209,61 +262,48 @@ const emptySnapshot = (): MimicSnapshot => ({
     server: "",
   },
   narration: [],
-  routines: [],
-  runs: [],
   entities: [],
-  jobs: [],
-  away: {
-    active: false,
-    grantedAt: 0,
-    expiresAt: 0,
-    routineIds: [],
-    actionCap: 12,
-    actionsUsed: 0,
-    keepAlive: true,
-  },
+  nudges: [],
+  nudgeSettings: { enabled: true },
   devices: [],
   stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0 },
+  addons: { installed: {} },
+  security: { biometric: false, lockTimeout: 0 },
+  usage: { current: { month: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 }, months: {} },
   recentEvents: [],
 });
 
-export interface MimicState extends MimicSnapshot {
+export interface DoppelState extends DoppelSnapshot {
   /** False until the first report arrives, so nothing flashes empty. */
   ready: boolean;
   /** False in a plain browser, where none of this can be real. */
   connected: boolean;
   now: number;
 
-  activeRun: ActiveRun | null;
-  activeAgent: AgentTask | null;
-  teaching: boolean;
-  graduating: { routineId: string; kind: "trusted" | "unattended" } | null;
+  agents: AgentTask[];
+  updateStatus: { state: string; version?: string | null; progress?: number | null };
   panelOpen: boolean;
   flash: string | null;
 
   connect: () => void;
   tick: () => void;
   setFlash: (text: string | null) => void;
-  setGraduating: (v: MimicState["graduating"]) => void;
   setPanelOpen: (open: boolean) => void;
-  setTeaching: (on: boolean) => void;
 }
 
 const NO_BRIDGE = "This is the interface without the desktop app behind it.";
 
-const bridge = (): MimicBridge | null =>
-  typeof window !== "undefined" && window.mimic?.isDesktop ? window.mimic : null;
+const bridge = (): DoppelBridge | null =>
+  typeof window !== "undefined" && window.doppel?.isDesktop ? window.doppel : null;
 
-export const useMimic = create<MimicState>((set, get) => ({
+export const useDoppel = create<DoppelState>((set) => ({
   ...emptySnapshot(),
   ready: false,
   connected: false,
   now: Date.now(),
 
-  activeRun: null,
-  activeAgent: null,
-  teaching: false,
-  graduating: null,
+  agents: [],
+  updateStatus: { state: "idle" },
   panelOpen: false,
   flash: null,
 
@@ -277,36 +317,18 @@ export const useMimic = create<MimicState>((set, get) => ({
     set({ connected: true });
 
     api.getState().then((s) => set({ ...s, ready: true }));
-    api.getRun().then((r) => set({ activeRun: r }));
-    api.getAgent().then((t) => set({ activeAgent: t }));
-    api.onAgent((t) => set({ activeAgent: t }));
-
-    api.onState((s) => {
-      const previous = get().routines;
-      set({ ...s, ready: true });
-
-      // Reaching the end of the proving ladder is worth stopping for.
-      for (const r of s.routines) {
-        const before = previous.find((p) => p.id === r.id);
-        if (
-          before &&
-          r.stage === "supervised" &&
-          before.provingRunsPassed < r.provingRunsRequired &&
-          r.provingRunsPassed >= r.provingRunsRequired
-        ) {
-          set({ graduating: { routineId: r.id, kind: "trusted" } });
-        }
-      }
-    });
-
-    api.onRun((r) => set({ activeRun: r }));
+    api.getAgent().then((t) => set({ agents: t ?? [] }));
+    api.getNudges().then((n) => set({ nudges: n }));
+    api.getUpdateStatus().then((s) => set({ updateStatus: s }));
+    api.onAgent((t) => set({ agents: t ?? [] }));
+    api.onNudge((n) => set({ nudges: n }));
+    api.onUpdate((s) => set({ updateStatus: s }));
+    api.onState((s) => set({ ...s, ready: true }));
   },
 
   tick: () => set({ now: Date.now() }),
   setFlash: (text) => set({ flash: text }),
-  setGraduating: (v) => set({ graduating: v }),
   setPanelOpen: (open) => set({ panelOpen: open }),
-  setTeaching: (on) => set({ teaching: on }),
 }));
 
 /* ---------------------------------------------------------------------------
@@ -315,59 +337,32 @@ export const useMimic = create<MimicState>((set, get) => ({
 
 const api = () => bridge();
 
-export const mimic = {
+export const doppel = {
   setPaused: (p: boolean) => api()?.setPaused(p),
   setPermissions: (patch: Partial<Permissions>) => api()?.setPermissions(patch),
   addRoot: () => api()?.addRoot(),
   removeRoot: (root: string) => api()?.removeRoot(root),
-
-  armTeaching: () => api()?.armTeaching(),
-  cancelTeaching: () => api()?.cancelTeaching(),
-  finishTeaching: () => api()?.finishTeaching() ?? Promise.resolve({ ok: false }),
-  mineNow: () => api()?.mineNow(),
-
-  setProvingRuns: (id: string, n: number) => api()?.setProvingRuns(id, n),
-  graduate: (id: string) => api()?.graduate(id),
-  grantUnattended: (id: string) => api()?.grantUnattended(id),
-  revokeUnattended: (id: string) => api()?.revokeUnattended(id),
-  demote: (id: string) => api()?.demote(id),
-  relearn: (id: string) => api()?.relearn(id),
-  dismissDrift: (id: string) => api()?.dismissDrift(id),
-  forgetRoutine: (id: string) => api()?.forgetRoutine(id),
-
-  startRun: (id: string, opts?: { supervised?: boolean }) => api()?.startRun(id, opts),
-  pauseRun: () => api()?.pauseRun(),
-  resumeRun: () => api()?.resumeRun(),
-  stepBack: () => api()?.stepBack(),
-  openCorrection: () => api()?.openCorrection(),
-  closeCorrection: () => api()?.closeCorrection(),
-  correct: (patch: CorrectionPatch) => api()?.correct(patch),
-  resolvePark: (choice: "approve" | "skip" | "stop") => api()?.resolvePark(choice),
-  yieldRun: () => api()?.yieldRun(),
-  resolveYield: (choice: "resume" | "handover" | "stop") => api()?.resolveYield(choice),
-  abortRun: () => api()?.abortRun(),
-
-  rollback: (runId: string) => api()?.rollback(runId) ?? Promise.resolve({ ok: false }),
-  exportWeek: () => api()?.exportWeek() ?? Promise.resolve({ ok: false }),
-  revealTrash: () => api()?.revealTrash(),
-
-  grantAway: (input: { routineIds: string[]; actionCap: number; hours: number; keepAlive: boolean }) =>
-    api()?.grantAway(input),
-  endAway: () => api()?.endAway(),
-  dispatch: (routineId: string) => api()?.dispatch(routineId),
-  answerJob: (jobId: string, choice: "approve" | "skip" | "later") =>
-    api()?.answerJob(jobId, choice),
-  stopAll: () => api()?.stopAll(),
-  clearJobs: () => api()?.clearJobs(),
+  listDisplays: () => api()?.listDisplays() ?? Promise.resolve([]),
+  setDisplay: (displayId: string | null) => api()?.setDisplay(displayId),
 
   /* the mind */
   setApiKey: (key: string) =>
     api()?.setApiKey(key) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
   clearApiKey: () => api()?.clearApiKey(),
+  setOpenAIKey: (key: string) =>
+    api()?.setOpenAIKey(key) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
+  clearOpenAIKey: () => api()?.clearOpenAIKey(),
+  transcribeAudio: (buffer: ArrayBuffer, prompt?: string) =>
+    api()?.transcribeAudio(buffer, prompt) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
+  whisperAsk: (buffer: ArrayBuffer, history?: { role: string; content: string }[]) =>
+    api()?.whisperAsk(buffer, history) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
   setAutoWatch: (on: boolean) => api()?.setAutoWatch(on),
   setDetail: (level: "light" | "thorough") => api()?.setDetail(level),
   overlaySetEnabled: (on: boolean) => api()?.overlaySetEnabled(on),
   overlayHome: () => api()?.overlayHome(),
+  whisperSetEnabled: (on: boolean) => api()?.whisperSetEnabled(on),
+  whisperHome: () => api()?.whisperHome(),
+  whisperSetAutoDismiss: (sec: number) => api()?.whisperSetAutoDismiss(sec),
   lookNow: () =>
     api()?.lookNow() ?? Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE }),
 
@@ -378,12 +373,23 @@ export const mimic = {
       pack: { entities: [], digests: [], episodes: [], tokens: 0 },
       text: "",
     }),
-  askBrain: (question: string) =>
-    api()?.askBrain(question) ??
+  askBrain: (question: string, history?: { role: string; content: string }[]) =>
+    api()?.askBrain(question, history) ??
+    Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE, pack: undefined }),
+  askBrainFast: (question: string, history?: { role: string; content: string }[]) =>
+    api()?.askBrainFast(question, history) ??
     Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE, pack: undefined }),
   forgetMoments: (ids: string[]) => api()?.forgetMoments(ids),
   brainEntities: () => api()?.brainEntities() ?? Promise.resolve([]),
   brainEpisodes: (limit?: number) => api()?.brainEpisodes(limit) ?? Promise.resolve([]),
+  brainAvailableDates: () => api()?.brainAvailableDates() ?? Promise.resolve([]),
+  brainEpisodesForDate: (date: string) =>
+    api()?.brainEpisodesForDate(date) ?? Promise.resolve([]),
+  brainPatterns: () => api()?.brainPatterns() ?? Promise.resolve([]),
+  morningBrief: () =>
+    api()?.morningBrief() ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
+  morningBriefCached: () =>
+    api()?.morningBriefCached() ?? Promise.resolve({ ok: false }),
   brainStats: () =>
     api()?.brainStats() ??
     Promise.resolve({
@@ -397,13 +403,43 @@ export const mimic = {
   brainForget: (id: string) => api()?.brainForget(id),
   consolidate: (scope: "hour" | "day") =>
     api()?.consolidate(scope) ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
+  exportBrain: () =>
+    api()?.exportBrain() ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
   wipeBrain: () => api()?.wipeBrain(),
+  ingestDocument: (filePath?: string) =>
+    api()?.ingestDocument(filePath) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
+  ingestSupported: () => api()?.ingestSupported() ?? Promise.resolve([]),
+
+  /* workflow recording */
+  recorderStart: (title?: string) =>
+    api()?.recorderStart(title) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
+  recorderStop: () =>
+    api()?.recorderStop() ?? Promise.resolve({ ok: false, detail: "Not connected." }),
+  recorderActive: () => api()?.recorderActive() ?? Promise.resolve(null),
+  recorderAbort: () => api()?.recorderAbort() ?? Promise.resolve({ ok: false }),
+  recorderSave: (procedure: RecordedProcedure) =>
+    api()?.recorderSave(procedure) ?? Promise.resolve({ ok: false }),
+
+  /* routines */
+  listRoutines: () => api()?.listRoutines() ?? Promise.resolve([]),
+  routineProposals: () => api()?.routineProposals() ?? Promise.resolve([]),
+  acceptRoutine: (patternId: string) =>
+    api()?.acceptRoutine(patternId) ?? Promise.resolve({ ok: false }),
+  rejectRoutine: (patternId: string) =>
+    api()?.rejectRoutine(patternId) ?? Promise.resolve({ ok: false }),
+  removeRoutine: (routineId: string) =>
+    api()?.removeRoutine(routineId) ?? Promise.resolve({ ok: false }),
+  toggleRoutine: (routineId: string) =>
+    api()?.toggleRoutine(routineId) ?? Promise.resolve({ ok: false }),
+  runRoutineNow: (routineId: string) =>
+    api()?.runRoutineNow(routineId) ?? Promise.resolve({ ok: false }),
 
   /* the agent */
-  runAgent: (input: { instruction: string; routineId?: string | null; title?: string }) =>
+  agentHistory: (limit?: number) => api()?.agentHistory(limit) ?? Promise.resolve([]),
+  runAgent: (input: { instruction: string; routineId?: string | null; title?: string; mode?: "background" | "foreground" }) =>
     api()?.runAgent(input) ?? Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE }),
-  answerAgent: (choice: "approve" | "skip" | "stop") => api()?.answerAgent(choice),
-  abortAgent: () => api()?.abortAgent(),
+  answerAgent: (id: string, choice: "approve" | "skip" | "stop") => api()?.answerAgent(id, choice),
+  abortAgent: (id?: string) => api()?.abortAgent(id),
 
   /* the account */
   requestLink: (email: string) =>
@@ -427,51 +463,69 @@ export const mimic = {
   exportAccount: () => api()?.exportAccount() ?? Promise.resolve({ ok: false, file: undefined }),
   deleteAccount: () => api()?.deleteAccount() ?? Promise.resolve({ ok: false }),
 
+  /* add-ons */
+  listAddons: () => api()?.listAddons() ?? Promise.resolve([]),
+  installAddon: (id: string) => api()?.installAddon(id) ?? Promise.resolve({ ok: false }),
+  uninstallAddon: (id: string) => api()?.uninstallAddon(id) ?? Promise.resolve({ ok: false }),
+  enableAddon: (id: string) => api()?.enableAddon(id) ?? Promise.resolve({ ok: false }),
+  disableAddon: (id: string) => api()?.disableAddon(id) ?? Promise.resolve({ ok: false }),
+  setAddonConfig: (id: string, key: string, value: string) =>
+    api()?.setAddonConfig(id, key, value) ?? Promise.resolve({ ok: false }),
+  addonAuth: (id: string) =>
+    api()?.addonAuth(id) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
+  addonDisconnect: (id: string) =>
+    api()?.addonDisconnect(id) ?? Promise.resolve({ ok: false }),
+
+  /* nudges */
+  dismissNudge: (id: string) => api()?.dismissNudge(id),
+  actOnNudge: (id: string) =>
+    api()?.actOnNudge(id) ?? Promise.resolve({ ok: false }),
+  nudgeSetEnabled: (on: boolean) => api()?.nudgeSetEnabled(on),
+
+  /* security / biometric */
+  securityAvailable: () =>
+    api()?.securityAvailable() ?? Promise.resolve({ available: false }),
+  securityStatus: () =>
+    api()?.securityStatus() ??
+    Promise.resolve({ available: false, enabled: false, locked: false, lockTimeout: 0 }),
+  securityVerify: () =>
+    api()?.securityVerify() ?? Promise.resolve({ ok: false, detail: "Not connected." }),
+  securitySetBiometric: (on: boolean) =>
+    api()?.securitySetBiometric(on) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
+  securitySetLockTimeout: (min: number) => api()?.securitySetLockTimeout(min),
+  securityLock: () => api()?.securityLock(),
+
+  /* updates */
+  getUpdateStatus: () => api()?.getUpdateStatus() ?? Promise.resolve({ state: "idle" }),
+  checkForUpdate: () => api()?.checkForUpdate(),
+  installUpdate: () => api()?.installUpdate(),
+
   forgetEntity: (id: string) => api()?.forgetEntity(id),
   listWindows: () => api()?.listWindows() ?? Promise.resolve([]),
   reset: () => api()?.reset(),
   appPaths: () => api()?.appPaths() ?? Promise.resolve({ state: "", trash: "" }),
-  openPocket: () => api()?.openPocket(),
+  revealTrash: () =>
+    api()?.appPaths().then((p) => p.trash && api()?.revealPath(p.trash)),
 };
 
 /* ---------------------------------------------------------------------------
    Selectors
    --------------------------------------------------------------------------- */
 
-export const byStage = (routines: Routine[], stage: Stage) =>
-  routines.filter((r) => r.stage === stage);
-
-export const stageCounts = (routines: Routine[]) => ({
-  learning: byStage(routines, "learning").length,
-  ready: byStage(routines, "ready").length,
-  supervised: byStage(routines, "supervised").length,
-  trusted: byStage(routines, "trusted").length,
-  unattended: byStage(routines, "unattended").length,
-});
-
-export const awaiting = (routines: Routine[]) =>
-  routines.filter(
-    (r) =>
-      r.stage === "ready" ||
-      r.drifting ||
-      (r.stage === "supervised" && r.provingRunsPassed >= r.provingRunsRequired) ||
-      unattendedEligible(r),
-  );
-
-export const awayMinutesLeft = (away: AwayAuthorization, now: number) =>
-  Math.max(0, Math.round((away.expiresAt - now) / 60_000));
-
 export type {
-  Routine,
-  RunRecord,
+  AddonInfo,
+  AgentRun,
   Entity,
-  PocketJob,
+  MorningBrief,
+  Nudge,
   ObservedEvent,
-  AwayAuthorization,
   AgentTask,
   NarrationLine,
   BrainEntity,
   BrainEpisode,
+  BrainPattern,
   BrainStats,
   ContextPack,
+  Routine,
+  RoutineProposal,
 };

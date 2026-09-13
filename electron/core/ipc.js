@@ -1,30 +1,29 @@
 const { ipcMain, BrowserWindow, dialog, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const crypto = require("node:crypto");
 
 const db = require("./db");
+const vault = require("./vault");
 const observer = require("./observer");
-const miner = require("./miner");
-const engine = require("./engine");
 const actions = require("./actions");
 const win32 = require("./win32");
 const claude = require("./claude");
 const brain = require("./brain");
 const vision = require("./vision");
 const agent = require("./agent");
+const nudge = require("./nudge");
+const routines = require("./routines");
 const account = require("./account");
+const addons = require("./addons");
+const biometric = require("./biometric");
+const recorder = require("./recorder");
+const screen = require("./screen");
+const ingest = require("./ingest");
 
 /**
  * Everything the interface can ask for. The renderer holds no truth of its
  * own — it renders what the main process reports and sends intentions back.
  */
-
-const MINE_DEBOUNCE_MS = 6000;
-const MINE_INTERVAL_MS = 60_000;
-
-let mineTimer = null;
-let teaching = { armed: false, startedAt: 0 };
 
 function broadcast(channel, payload) {
   for (const w of BrowserWindow.getAllWindows()) {
@@ -32,25 +31,10 @@ function broadcast(channel, payload) {
   }
 }
 
-const pushState = () => broadcast("mimic:state", db.publicState());
-const pushRun = (run) => broadcast("mimic:run", run);
-const pushAgent = (task) => broadcast("mimic:agent", task);
-const pushNarration = (line) => broadcast("mimic:narration", line);
-
-/* ------------------------------------------------------------------- mining */
-
-function scheduleMine() {
-  if (mineTimer) clearTimeout(mineTimer);
-  mineTimer = setTimeout(() => {
-    mineTimer = null;
-    try {
-      miner.mine();
-      pushState();
-    } catch (err) {
-      console.error("[mimic] mining failed:", err.message);
-    }
-  }, MINE_DEBOUNCE_MS);
-}
+const pushState = () => broadcast("doppel:state", db.publicState());
+const pushAgent = (task) => broadcast("doppel:agent", task);
+const pushNarration = (line) => broadcast("doppel:narration", line);
+const pushNudge = (nudges) => broadcast("doppel:nudge", nudges);
 
 /* ------------------------------------------------------------ consolidation */
 
@@ -69,7 +53,7 @@ function startConsolidation() {
       await brain.consolidate({ scope: "hour" });
       pushState();
     } catch (err) {
-      console.error("[mimic] could not consolidate:", err.message);
+      console.error("[doppel] could not consolidate:", err.message);
     }
   }, 20 * 60_000);
 
@@ -81,107 +65,147 @@ function startConsolidation() {
       /* tomorrow will do */
     }
   }, 6 * 60 * 60_000);
-}
 
-/* -------------------------------------------------------------- pocket queue */
-
-let jobTimer = null;
-
-function jobTick() {
-  const s = db.get();
-  const running = engine.snapshot();
-  if (running && !["finished", "stopped"].includes(running.status)) return;
-
-  const next = [...s.jobs].reverse().find((j) => j.state === "queued");
-  if (!next) return;
-
-  const routine = s.routines.find((r) => r.id === next.routineId);
-  if (!routine) {
-    db.update((st) => {
-      const j = st.jobs.find((x) => x.id === next.id);
-      if (j) j.state = "stopped";
-    });
-    pushState();
-    return;
-  }
-
-  db.update((st) => {
-    const j = st.jobs.find((x) => x.id === next.id);
-    if (j) {
-      j.state = "running";
-      j.startedAt = Date.now();
+  /* Generate morning brief proactively — if it's before noon and there
+     isn't one yet for today, write it in the background. */
+  setTimeout(async () => {
+    if (!claude.configured()) return;
+    const hour = new Date().getHours();
+    if (hour >= 5 && hour < 12) {
+      const existing = brain.getMorningBrief();
+      if (!existing) {
+        try {
+          await brain.generateMorningBrief();
+          console.log("[doppel] morning brief generated");
+        } catch {
+          /* not critical */
+        }
+      }
     }
-  });
-  pushState();
-
-  engine.start(next.routineId, { supervised: false, unattended: true, from: "pocket" });
-}
-
-function startJobLoop() {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = setInterval(() => {
-    const s = db.get();
-    if (s.observation.paused) return;
-    if (s.away.active && Date.now() >= s.away.expiresAt) {
-      db.update((st) => {
-        st.away.active = false;
-      });
-      pushState();
-    }
-    jobTick();
-  }, 1500);
-}
-
-/** Keep the Pocket job in step with what the engine is actually doing. */
-function syncJobFromRun(run) {
-  if (!run || run.dispatchedFrom !== "pocket") return;
-
-  db.update((s) => {
-    const job = s.jobs.find((j) => j.state === "running" && j.routineId === run.routineId);
-    if (!job) return;
-
-    const routine = s.routines.find((r) => r.id === run.routineId);
-    const step = routine?.stepLibrary.find((x) => x.id === run.order[run.stepIndex]);
-    job.stepIndex = Math.max(0, run.stepIndex);
-    job.stepCount = run.order.length;
-    job.stepLabel = step?.label;
-    job.runId = run.id;
-
-    if (run.status === "parked") {
-      job.state = "needs-you";
-      job.question = { prompt: run.parkedReason, rule: run.parkedRule };
-    } else if (run.status === "finished") {
-      job.state = "done";
-      job.finishedAt = Date.now();
-    } else if (run.status === "stopped") {
-      job.state = "stopped";
-      job.finishedAt = Date.now();
-    }
-  });
-  pushState();
+  }, 30_000); // 30s after startup, to let everything else settle
 }
 
 /* --------------------------------------------------------------------- wire */
 
 function register() {
-  engine.setPublisher((run) => {
-    pushRun(run);
-    syncJobFromRun(run);
-    if (run && ["finished", "stopped"].includes(run.status)) pushState();
-  });
-
-  agent.setPublisher((task) => {
-    pushAgent(task);
-    if (task && ["finished", "stopped"].includes(task.status)) pushState();
-  });
+  agent.setPublisher((taskList) => pushAgent(taskList));
+  agent.setOnComplete(() => pushState());
 
   brain.init();
+  addons.init();
+  nudge.init(pushNudge);
+  biometric.init();
+  routines.startScheduler();
+
+  /* -------------------------------------------------------------------
+     Startup catch-up: find files that changed while Doppel was closed and
+     remember them. This is how Doppel learns about work that happened
+     offline — no screenshots, just the filesystem delta.
+     ------------------------------------------------------------------- */
+  const lastRunAt = db.get().stats?.lastRunAt ?? 0;
+  if (lastRunAt > 0) {
+    const missed = observer.catchUp(lastRunAt);
+    if (missed.length > 0) {
+      /* Group by directory to avoid flooding the brain with one episode per
+         file. "12 files changed in Documents/reports" is more useful than
+         twelve separate episodes. */
+      const byDir = new Map();
+      for (const f of missed) {
+        const key = f.dir;
+        if (!byDir.has(key)) byDir.set(key, []);
+        byDir.get(key).push(f);
+      }
+      for (const [dirPath, files] of byDir) {
+        const created = files.filter((f) => f.kind === "file.created");
+        const changed = files.filter((f) => f.kind === "file.changed");
+        const parts = [];
+        if (created.length > 0) {
+          parts.push(
+            created.length <= 3
+              ? `New: ${created.map((f) => f.name).join(", ")}`
+              : `${created.length} new files`,
+          );
+        }
+        if (changed.length > 0) {
+          parts.push(
+            changed.length <= 3
+              ? `Changed: ${changed.map((f) => f.name).join(", ")}`
+              : `${changed.length} files changed`,
+          );
+        }
+        const folderName = path.basename(dirPath);
+        brain.remember({
+          kind: "catchup",
+          at: Math.max(...files.map((f) => f.mtime)),
+          activity: `While I was away, ${parts.join("; ")} in ${folderName}.`,
+          detail: files
+            .slice(0, 10)
+            .map((f) => f.name)
+            .join(", "),
+          location: dirPath,
+          salience: 0.35,
+        });
+      }
+      console.log(`[doppel] catch-up: ${missed.length} file changes since last run`);
+    }
+  }
+  db.update((s) => { s.stats.lastRunAt = Date.now(); }, { silent: true });
+
+  /* -------------------------------------------------------------------
+     Live observation → brain bridge.
+
+     When vision (screen watching) is active, it creates high-quality
+     episodes. When it's not, the observer creates lightweight episodes
+     so Doppel still learns from window switches and file activity.
+     ------------------------------------------------------------------- */
+  let lastObservedApp = null;
 
   observer.start((event) => {
     /* Window changes are the cue to take a fresh look — a new window is the
        moment most likely to be a new piece of work. */
     if (event.kind === "window.focus") vision.noteWindow(event);
-    scheduleMine();
+
+    /* Create brain episodes from events when vision isn't watching.
+       Vision creates richer episodes, so we stay out of its way. */
+    const visionWatching =
+      db.get().permissions.screen &&
+      !db.get().observation.paused &&
+      claude.configured();
+
+    if (!visionWatching) {
+      if (event.kind === "window.focus" && event.app !== lastObservedApp) {
+        lastObservedApp = event.app;
+        brain.remember({
+          kind: "window",
+          at: event.at,
+          app: event.app,
+          window: event.title,
+          activity: `Switched to ${event.app}: ${event.title}`,
+          salience: 0.2,
+        });
+      }
+      if (event.kind === "file.created") {
+        brain.remember({
+          kind: "file",
+          at: event.at,
+          activity: `New file: ${event.name} in ${path.basename(event.dir)}`,
+          detail: event.path,
+          location: event.dir,
+          salience: 0.3,
+        });
+      }
+      if (event.kind === "file.moved") {
+        brain.remember({
+          kind: "file",
+          at: event.at,
+          activity: `Moved ${event.name} from ${path.basename(event.fromDir)} to ${path.basename(event.dir)}`,
+          detail: event.path,
+          location: event.dir,
+          salience: 0.3,
+        });
+      }
+    }
+
     pushState();
   });
 
@@ -193,17 +217,6 @@ function register() {
   startConsolidation();
   account.startHeartbeat();
 
-  setInterval(() => {
-    try {
-      miner.mine();
-      pushState();
-    } catch {
-      /* nothing worth reporting */
-    }
-  }, MINE_INTERVAL_MS);
-
-  startJobLoop();
-
   const handle = (channel, fn) =>
     ipcMain.handle(channel, async (_event, ...args) => {
       try {
@@ -211,14 +224,13 @@ function register() {
         pushState();
         return result ?? { ok: true };
       } catch (err) {
-        console.error(`[mimic] ${channel}:`, err);
+        console.error(`[doppel] ${channel}:`, err);
         return { ok: false, detail: err.message };
       }
     });
 
   /* --- state ------------------------------------------------------------ */
   ipcMain.handle("state:get", () => db.publicState());
-  ipcMain.handle("run:get", () => engine.snapshot());
 
   /* --- observation ------------------------------------------------------ */
   handle("obs:pause", (paused) => {
@@ -239,7 +251,7 @@ function register() {
   handle("obs:addRoot", async () => {
     const win = BrowserWindow.getFocusedWindow();
     const picked = await dialog.showOpenDialog(win, {
-      title: "Which folder may Mimic watch?",
+      title: "Which folder may Doppel watch?",
       properties: ["openDirectory"],
     });
     if (picked.canceled || !picked.filePaths[0]) return { ok: false };
@@ -259,226 +271,13 @@ function register() {
     observer.restart();
   });
 
-  /* --- teaching --------------------------------------------------------- */
-  handle("teach:arm", () => {
-    teaching = { armed: true, startedAt: Date.now() };
-    return { ok: true };
-  });
+  ipcMain.handle("obs:displays", () => screen.listDisplays());
 
-  handle("teach:cancel", () => {
-    teaching = { armed: false, startedAt: 0 };
-  });
-
-  handle("teach:finish", () => {
-    if (!teaching.armed) return { ok: false, reason: "not-armed" };
-    const from = teaching.startedAt;
-    teaching = { armed: false, startedAt: 0 };
-    const result = miner.creditTeaching(from, Date.now());
-    return result;
-  });
-
-  handle("mine:now", () => {
-    miner.mine();
-    return { ok: true };
-  });
-
-  /* --- routines --------------------------------------------------------- */
-  const patchRoutine = (id, fn) =>
+  handle("obs:setDisplay", (displayId) => {
     db.update((s) => {
-      const r = s.routines.find((x) => x.id === id);
-      if (r) fn(r, s);
-    });
-
-  handle("routine:setProvingRuns", (id, n) =>
-    patchRoutine(id, (r) => {
-      r.provingRunsRequired = Math.min(5, Math.max(3, Number(n) || 4));
-    }),
-  );
-
-  handle("routine:graduate", (id) =>
-    patchRoutine(id, (r) => {
-      r.stage = "trusted";
-      r.quarantined = false;
-      r.presentRunsPassed = 0;
-    }),
-  );
-
-  handle("routine:grantUnattended", (id) =>
-    patchRoutine(id, (r) => {
-      r.stage = "unattended";
-    }),
-  );
-
-  handle("routine:revokeUnattended", (id) =>
-    patchRoutine(id, (r, s) => {
-      r.stage = "trusted";
-      s.away.routineIds = s.away.routineIds.filter((x) => x !== id);
-    }),
-  );
-
-  handle("routine:demote", (id) =>
-    patchRoutine(id, (r, s) => {
-      r.stage = "supervised";
-      r.provingRunsPassed = 0;
-      r.presentRunsPassed = 0;
-      s.away.routineIds = s.away.routineIds.filter((x) => x !== id);
-    }),
-  );
-
-  handle("routine:relearn", (id) =>
-    patchRoutine(id, (r) => {
-      r.stage = "learning";
-      r.relearning = true;
-      r.drifting = false;
-      r.recentOutcomes = [];
-      r.confidence = Math.min(r.confidence, 55);
-      r.confidenceHistory.push({ at: Date.now(), value: r.confidence });
-    }),
-  );
-
-  handle("routine:dismissDrift", (id) =>
-    patchRoutine(id, (r) => {
-      r.drifting = false;
-      r.recentOutcomes = [];
-    }),
-  );
-
-  handle("routine:forget", (id) =>
-    db.update((s) => {
-      s.routines = s.routines.filter((r) => r.id !== id);
-    }),
-  );
-
-  /* --- runs ------------------------------------------------------------- */
-  handle("run:start", (id, opts) => engine.start(id, opts ?? {}));
-  handle("run:pause", () => engine.pause());
-  handle("run:resume", () => engine.resume());
-  handle("run:stepBack", () => engine.stepBack());
-  handle("run:openCorrection", () => engine.openCorrection());
-  handle("run:closeCorrection", () => engine.closeCorrection());
-  handle("run:correct", (patch) => engine.correct(patch));
-  handle("run:resolvePark", (choice) => engine.resolvePark(choice));
-  handle("run:yield", () => engine.yieldToUser());
-  handle("run:resolveYield", (choice) => engine.resolveYield(choice));
-  handle("run:abort", () => engine.abort());
-
-  /* --- ledger ----------------------------------------------------------- */
-  handle("ledger:rollback", (runId) => engine.rollback(runId));
-
-  handle("ledger:export", async () => {
-    const s = db.get();
-    const win = BrowserWindow.getFocusedWindow();
-    const picked = await dialog.showSaveDialog(win, {
-      title: "Export the week",
-      defaultPath: `mimic-${new Date().toISOString().slice(0, 10)}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (picked.canceled || !picked.filePath) return { ok: false };
-
-    const since = Date.now() - 7 * 86_400_000;
-    const rows = [
-      "When,Routine,Outcome,Duration (s),Minutes returned,Corrections,Watched,Changes",
-      ...s.runs
-        .filter((r) => r.at >= since)
-        .sort((a, b) => a.at - b.at)
-        .map((r) =>
-          [
-            new Date(r.at).toISOString(),
-            `"${r.routineTitle.replace(/"/g, '""')}"`,
-            r.outcome,
-            r.durationSec,
-            r.minutesSaved,
-            r.corrections,
-            r.supervised ? "yes" : "no",
-            `"${(r.changes ?? []).join("; ").replace(/"/g, '""')}"`,
-          ].join(","),
-        ),
-    ];
-    fs.writeFileSync(picked.filePath, rows.join("\n"), "utf8");
-    return { ok: true, file: picked.filePath };
-  });
-
-  handle("ledger:revealTrash", () => {
-    shell.openPath(db.paths.trash);
-  });
-
-  /* --- away ------------------------------------------------------------- */
-  handle("away:grant", ({ routineIds, actionCap, hours, keepAlive }) => {
-    const now = Date.now();
-    db.update((s) => {
-      s.away = {
-        active: true,
-        grantedAt: now,
-        expiresAt: now + hours * 3_600_000,
-        routineIds,
-        actionCap,
-        actionsUsed: 0,
-        keepAlive: Boolean(keepAlive),
-      };
+      s.observation.displayId = displayId || null;
     });
   });
-
-  handle("away:end", () =>
-    db.update((s) => {
-      s.away.active = false;
-    }),
-  );
-
-  /* --- pocket ----------------------------------------------------------- */
-  handle("pocket:dispatch", (routineId) => {
-    const s = db.get();
-    const routine = s.routines.find((r) => r.id === routineId);
-    if (!routine) return { ok: false, detail: "No such routine." };
-
-    db.update((st) => {
-      st.jobs.unshift({
-        id: crypto.randomUUID(),
-        routineId,
-        routineTitle: routine.title,
-        state: "queued",
-        dispatchedAt: Date.now(),
-        stepIndex: 0,
-        stepCount: engine.activePlan(routine).length,
-      });
-    });
-    return { ok: true };
-  });
-
-  handle("pocket:answer", (jobId, choice) => {
-    const map = { approve: "approve", skip: "skip", later: "later" };
-    if (choice === "later") {
-      db.update((s) => {
-        const j = s.jobs.find((x) => x.id === jobId);
-        if (j) {
-          j.state = "queued";
-          j.question = null;
-        }
-      });
-      engine.stopCleanly("You said you'd deal with it later.");
-      return;
-    }
-    engine.resolvePark(map[choice] ?? "skip");
-  });
-
-  handle("pocket:stopAll", () => {
-    engine.abort();
-    db.update((s) => {
-      for (const j of s.jobs) {
-        if (["queued", "running", "needs-you"].includes(j.state)) {
-          j.state = "stopped";
-          j.finishedAt = Date.now();
-          j.question = null;
-        }
-      }
-      s.away.active = false;
-    });
-  });
-
-  handle("pocket:clear", () =>
-    db.update((s) => {
-      s.jobs = s.jobs.filter((j) => !["done", "stopped"].includes(j.state));
-    }),
-  );
 
   /* --- memory ----------------------------------------------------------- */
   handle("memory:forget", (id) =>
@@ -495,7 +294,8 @@ function register() {
 
     const check = await claude.verifyKey(trimmed);
     db.update((s) => {
-      s.ai.apiKey = check.ok ? trimmed : s.ai.apiKey;
+      /* Encrypt the key before storing — it's decrypted on read via db.apiKey(). */
+      s.ai.apiKey = check.ok ? vault.encryptSecret(trimmed) : s.ai.apiKey;
       s.ai.verified = check.ok;
       s.ai.lastError = check.ok ? null : check.detail;
     });
@@ -509,6 +309,178 @@ function register() {
       s.ai.lastError = null;
     }),
   );
+
+  handle("ai:setOpenAIKey", (key) => {
+    const trimmed = String(key ?? "").trim();
+    if (!trimmed) return { ok: false, detail: "That's empty." };
+    db.update((s) => {
+      s.ai.openaiKey = vault.encryptSecret(trimmed);
+    });
+    return { ok: true };
+  });
+
+  handle("ai:clearOpenAIKey", () =>
+    db.update((s) => {
+      s.ai.openaiKey = "";
+    }),
+  );
+
+  /* --- whisper transcription ------------------------------------------- */
+
+  ipcMain.handle("whisper:transcribe", async (_e, audioBuffer, prompt) => {
+    const openaiKey = db.openaiKey() || process.env.OPENAI_API_KEY;
+    if (!openaiKey) return { ok: false, detail: "No OpenAI key configured." };
+
+    try {
+      /* Electron IPC can pass ArrayBuffers as various types. Normalise. */
+      const buf = Buffer.isBuffer(audioBuffer)
+        ? audioBuffer
+        : Buffer.from(audioBuffer instanceof ArrayBuffer ? new Uint8Array(audioBuffer) : audioBuffer);
+
+      if (buf.length < 100) return { ok: false, detail: "Recording too short." };
+
+      const boundary = `----DoppelWhisper${Date.now()}`;
+      const preamble = Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="audio.webm"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      );
+      /* Optional prompt field — helps Whisper recognise domain-specific words. */
+      const promptPart = prompt
+        ? `\r\n--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="prompt"\r\n\r\n${prompt}\r\n`
+        : "\r\n";
+      const modelPart = Buffer.from(
+        `${promptPart}--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n` +
+        `--${boundary}--\r\n`,
+      );
+      const body = Buffer.concat([preamble, buf, modelPart]);
+
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return { ok: false, detail: `OpenAI ${res.status}: ${text.slice(0, 200)}` };
+      }
+
+      const data = await res.json();
+      return { ok: true, text: data.text ?? "" };
+    } catch (err) {
+      return { ok: false, detail: err.message };
+    }
+  });
+
+  /**
+   * Combined transcribe + answer in one IPC call. Saves a renderer round-trip
+   * (~50ms) and lets us start brain recall while transcription is in flight.
+   */
+  ipcMain.handle("whisper:ask", async (_e, audioBuffer, history) => {
+    const openaiKey = db.openaiKey() || process.env.OPENAI_API_KEY;
+    if (!openaiKey) return { ok: false, detail: "No OpenAI key configured." };
+
+    try {
+      /* Start recall pre-warming while we wait for transcription. We don't
+         know the question yet, but preloading the recent episodes into the
+         OS page cache helps. */
+      brain.recentEpisodes(8);
+
+      const buf = Buffer.isBuffer(audioBuffer)
+        ? audioBuffer
+        : Buffer.from(audioBuffer instanceof ArrayBuffer ? new Uint8Array(audioBuffer) : audioBuffer);
+
+      if (buf.length < 100) return { ok: false, detail: "Recording too short." };
+
+      const boundary = `----DoppelWhisper${Date.now()}`;
+      const preamble = Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="audio.webm"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      );
+      const modelPart = Buffer.from(
+        `\r\n--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n` +
+        `--${boundary}--\r\n`,
+      );
+      const body = Buffer.concat([preamble, buf, modelPart]);
+
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        return { ok: false, phase: "transcribe", detail: `OpenAI ${res.status}: ${text.slice(0, 200)}` };
+      }
+
+      const data = await res.json();
+      const transcript = (data.text ?? "").trim();
+      if (!transcript) return { ok: false, phase: "transcribe", detail: "No speech detected." };
+
+      /* Only clearly imperative sentences become agent tasks. Everything
+         else — questions, greetings, conversation — gets answered by the
+         brain. Patterns are searched anywhere in the text, not just at the
+         start, so "Hi, could you open..." works the same as "open...". */
+      /* Follow-up confirmations that reference a prior instruction. These need
+         the previous conversation turn extracted and sent to the agent. */
+      const isFollowUp = (history ?? []).length > 0 &&
+        /\b(yeah|yes|yep|yup|ok|okay|sure|go ahead|do it|do that|do what i|just do)\b/i.test(transcript);
+
+      /* "Can you X?" is a polite instruction, not a question. Only treat ?
+         as non-instruction for genuine info questions. */
+      const endsQ = transcript.trim().endsWith("?");
+      const politeRequest = /\b(can you|could you|would you|will you)\b/i.test(transcript);
+      const genuineQuestion = endsQ && !politeRequest &&
+        /^(what|where|when|why|how|who|which|is|are|does|do|did|was|were|has|have)\b/i.test(transcript.trim());
+
+      /* Instructions go to the agent — including screen-related ones, since
+         the agent now has look_at_screen. Only pure screen questions ("what's
+         on my screen?") without an actionable verb fall through to the brain. */
+      const isInstruction = !genuineQuestion && (
+        isFollowUp ||
+        /\b(can you|could you|would you|will you|i need you to|i want you to)\b/i.test(transcript) ||
+        /\bplease\s+(open|create|make|build|run|start|stop|move|copy|delete|install|download|send|write|edit|fix|update|close|launch|save|upload|convert|merge|add|remove|change|rename|find|get|search|show|look|take|put|turn|switch|toggle|enable|disable|clean|clear|organize|sort|schedule|order|post|share|deploy|test|format|print|zip|translate|summarize|draft|generate|fetch|pull|push)\b/i.test(transcript) ||
+        /\b(find|get|search|show|look)\s+(me|for|up)\b/i.test(transcript));
+
+      const screenQ = !isInstruction && isScreenQuestion(transcript) && db.get().permissions.screen && claude.configured();
+
+      if (isInstruction) {
+        /* Instruction — return the transcript so the renderer sends it to the agent. */
+        return { ok: true, transcript, isInstruction: true };
+      }
+
+      /* Everything else — answer from memory (or screen if they asked). */
+      let result;
+      if (screenQ) {
+        result = await lookAndAnswer(transcript, { fast: true, history: history ?? [] });
+      } else {
+        result = await brain.answer(transcript, { fast: true, history: history ?? [] });
+        if (result.ok && result.text) brain.rememberConversation(transcript, result.text);
+      }
+      return {
+        ok: result.ok,
+        transcript,
+        text: result.text ?? "",
+        empty: result.empty,
+        detail: result.detail,
+        isInstruction: false,
+      };
+    } catch (err) {
+      return { ok: false, detail: err.message };
+    }
+  });
 
   handle("ai:setAutoWatch", (on) =>
     db.update((s) => {
@@ -527,6 +499,103 @@ function register() {
     return result;
   });
 
+  /* --- screen-aware answers --------------------------------------------- */
+
+  /**
+   * Detect questions about the current screen. When the user says "what's on
+   * my screen", "what am I looking at", etc., take a fresh look FIRST and
+   * fold the observation into the answer context.
+   */
+  const SCREEN_PATTERNS = [
+    /\bwhat.*(on|at).*(my|the)?\s*screen\b/i,
+    /\bwhat.*(am i|i'm).*(look|see|do|work)/i,
+    /\bwhat.*(is|are)\s+this\b/i,
+    /\bwhat.*(see|seeing|show)\b.*right now/i,
+    /\blook at.*(my|the)?\s*screen\b/i,
+    /\bread.*(my|the)?\s*screen\b/i,
+    /\btell me what.*(see|screen|open)\b/i,
+    /\bscreen\s*right\s*now\b/i,
+    /\bcurrently\s+(on|open|showing|visible)\b/i,
+    /\b(describe|explain)\s+.*(screen|window|page)\b/i,
+  ];
+
+  function isScreenQuestion(text) {
+    return SCREEN_PATTERNS.some((re) => re.test(text));
+  }
+
+  /**
+   * Look at the screen, then answer with the fresh observation as extra
+   * context. Falls back to normal brain.answer if looking fails.
+   */
+  function recentScreenContext() {
+    /* Use the most recent non-sensitive observation as context. If Doppel
+       looked in the last 60 seconds, that's fresh enough. */
+    const recent = brain.recentEpisodes(5).filter((e) => !e.sensitive && e.activity && e.kind === "screen");
+    if (recent.length === 0) return null;
+    const best = recent[0];
+    if (Date.now() - best.at > 60_000) return null;
+    const parts = [
+      best.activity,
+      best.detail,
+      best.location ? "Location: " + best.location : "",
+      ...(best.fragments || []).map((f) => f.what + ": " + f.value),
+    ].filter(Boolean);
+    return parts.join("\n");
+  }
+
+  async function lookAndAnswer(question, opts) {
+    /* One API call: capture the screen, send the image + question together.
+       No separate vision analysis step — the model reads the screen and
+       answers in one shot. */
+    const shot = await screen.capture({ maxEdge: 1366 });
+    if (!shot.ok) {
+      /* Fall back to recent text-based observations. */
+      const ctx = recentScreenContext();
+      if (ctx) {
+        const result = await brain.answer(question, { ...opts, screenContext: ctx });
+        if (result.ok && result.text) brain.rememberConversation(question, result.text, ctx);
+        return result;
+      }
+      return { ok: true, text: shot.detail || "The screen capture didn't come back." };
+    }
+
+    const pack = await brain.recallSemantic(question, { limit: 6, budgetTokens: 1200 });
+    const found = pack.entities.length + pack.episodes.length + pack.digests.length;
+    const memoryBlock = found > 0
+      ? `\n\nRelevant memories:\n${brain.packToText(pack)}`
+      : "";
+
+    const messages = [
+      ...(opts.history ?? []).map((h) => ({ role: h.role, content: h.content })),
+      {
+        role: "user",
+        content: [
+          screen.asImageBlock(shot),
+          {
+            type: "text",
+            text: `They said: "${question}"\n\nThat's their screen right now.${memoryBlock}`,
+          },
+        ],
+      },
+    ];
+
+    const result = await claude.ask({
+      system: `You are Doppel — a personal agent on this person's computer. You can see their screen. Answer their question about what's on screen directly and conversationally. Be specific — quote text, name apps, describe what you see. First person, short sentences, no emoji.`,
+      effort: "low",
+      thinking: false,
+      maxTokens: 500,
+      messages,
+    });
+
+    if (!result.ok) return result;
+
+    /* Remember what was on screen so future questions can find it. */
+    const screenSummary = result.text?.slice(0, 600) ?? "";
+    brain.rememberConversation(question, result.text, `Screen at ${shot.displayName ?? "primary"}: ${screenSummary}`);
+
+    return { ok: true, text: result.text, pack };
+  }
+
   /* --- the brain -------------------------------------------------------- */
 
   ipcMain.handle("brain:recall", async (_e, query) => {
@@ -539,9 +608,35 @@ function register() {
 
   /* Memories are kept as vectors and terse records; this is where they become
      English again, and only because someone asked. */
-  ipcMain.handle("brain:ask", async (_e, question) => {
+  ipcMain.handle("brain:ask", async (_e, question, history) => {
     try {
-      return await brain.answer(String(question ?? ""));
+      const q = String(question ?? "");
+      if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
+        return await lookAndAnswer(q, { history: history ?? [] });
+      }
+      const result = await brain.answer(q, { history: history ?? [] });
+      if (result.ok && result.text) brain.rememberConversation(q, result.text);
+      return result;
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
+
+  /* Fast path — smaller context, low effort, no thinking. For the whisper panel
+     where speed matters more than thoroughness. */
+  ipcMain.handle("brain:ask-fast", async (_e, question, history) => {
+    try {
+      const q = String(question ?? "");
+      if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
+        return await lookAndAnswer(q, { fast: true, history: history ?? [] });
+      }
+      const result = await brain.answer(q, {
+        fast: true,
+        history: history ?? [],
+        onText: (delta) => broadcast("doppel:answer-stream", delta),
+      });
+      if (result.ok && result.text) brain.rememberConversation(q, result.text);
+      return result;
     } catch (err) {
       return { ok: false, reason: "error", detail: err.message };
     }
@@ -551,6 +646,8 @@ function register() {
 
   ipcMain.handle("brain:entities", () => brain.knownEntities());
   ipcMain.handle("brain:episodes", (_e, limit) => brain.recentEpisodes(limit ?? 60));
+  ipcMain.handle("brain:availableDates", () => brain.availableDates());
+  ipcMain.handle("brain:episodesForDate", (_e, date) => brain.episodesForDate(date));
   ipcMain.handle("brain:stats", () => brain.stats());
 
   handle("brain:forget", (id) => brain.forgetEntity(id));
@@ -560,19 +657,183 @@ function register() {
     return result;
   });
 
+  ipcMain.handle("brain:patterns", () => brain.detectPatterns());
+
+  ipcMain.handle("brain:morningBrief", async () => {
+    try {
+      return await brain.generateMorningBrief();
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
+
+  ipcMain.handle("brain:morningBriefCached", () => {
+    const brief = brain.getMorningBrief();
+    return brief ? { ok: true, brief } : { ok: false };
+  });
+
+  ipcMain.handle("brain:export", async () => {
+    try {
+      const data = brain.exportBrain();
+      const result = await dialog.showSaveDialog({
+        title: "Export Doppel's brain",
+        defaultPath: `doppel-brain-${new Date().toISOString().slice(0, 10)}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (result.canceled || !result.filePath) return { ok: false, reason: "canceled" };
+      const fs = require("node:fs");
+      fs.writeFileSync(result.filePath, JSON.stringify(data, null, 2), "utf8");
+      return { ok: true, file: result.filePath, stats: data.stats };
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
+
   handle("brain:wipe", () => brain.wipe());
+
+  /* --- document ingestion ----------------------------------------------- */
+
+  ipcMain.handle("brain:ingest", async (_e, filePath) => {
+    if (filePath) return ingest.ingest(filePath);
+    /* No path provided — open a file picker. */
+    const exts = ingest.supportedExtensions();
+    const result = await dialog.showOpenDialog({
+      title: "Choose files to import",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Documents & Images", extensions: exts.map((e) => e.slice(1)) },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, detail: "No files selected." };
+    }
+    let totalEpisodes = 0;
+    const imported = [];
+    for (const fp of result.filePaths) {
+      const r = await ingest.ingest(fp);
+      if (r.ok) {
+        totalEpisodes += r.episodes;
+        imported.push(r.title);
+      }
+    }
+    if (imported.length === 0) {
+      return { ok: false, detail: "No files could be imported." };
+    }
+    return { ok: true, episodes: totalEpisodes, files: imported };
+  });
+
+  handle("brain:ingestSupported", () => ingest.supportedExtensions());
+
+  /* --- routines --------------------------------------------------------- */
+
+  ipcMain.handle("routines:list", () => routines.list());
+  ipcMain.handle("routines:proposals", () => routines.proposals());
+  handle("routines:accept", (patternId) => routines.accept(patternId));
+  handle("routines:reject", (patternId) => routines.reject(patternId));
+  handle("routines:remove", (routineId) => routines.remove(routineId));
+  handle("routines:toggle", (routineId) => routines.toggle(routineId));
+  handle("routines:runNow", (routineId) => routines.runNow(routineId));
+
+  /* --- add-ons ---------------------------------------------------------- */
+
+  ipcMain.handle("addons:list", () => addons.list());
+  handle("addons:install", (id) => addons.install(id));
+  handle("addons:uninstall", (id) => addons.uninstall(id));
+  handle("addons:enable", (id) => addons.enable(id));
+  handle("addons:disable", (id) => addons.disable(id));
+  handle("addons:setConfig", (id, key, value) => addons.setConfig(id, key, value));
+  ipcMain.handle("addons:auth", async (_e, id) => addons.startAuth(id));
+  handle("addons:disconnect", (id) => addons.disconnectAuth(id));
+
+  /* --- nudges ----------------------------------------------------------- */
+
+  ipcMain.handle("nudge:active", () => nudge.snapshot());
+  handle("nudge:dismiss", (id) => nudge.dismiss(id));
+
+  handle("nudge:setEnabled", (on) => {
+    db.update((s) => { s.nudges.enabled = !!on; });
+  });
+
+  handle("nudge:act", (id) => {
+    const result = nudge.act(id);
+    if (!result.ok) return result;
+    const n = result.nudge;
+    if (n.kind === "offer" && n.detail) {
+      agent.run({ instruction: n.detail, title: n.text }).catch(() => {});
+    }
+    return result;
+  });
+
+  /* --- biometric / security --------------------------------------------- */
+
+  ipcMain.handle("security:available", () => biometric.checkAvailable());
+  ipcMain.handle("security:status", () => biometric.status());
+
+  ipcMain.handle("security:verify", async () => {
+    const result = await biometric.verify();
+    if (result.ok) broadcast("doppel:unlocked", true);
+    return result;
+  });
+
+  handle("security:setBiometric", async (on) => {
+    const result = await biometric.setEnabled(on);
+    if (result.ok) broadcast("doppel:unlocked", !on);
+    return result;
+  });
+
+  handle("security:setLockTimeout", (minutes) => {
+    biometric.setLockTimeout(minutes);
+  });
+
+  handle("security:lock", () => {
+    biometric.lock();
+    broadcast("doppel:unlocked", false);
+  });
+
+  /* --- workflow recording ----------------------------------------------- */
+
+  handle("recorder:start", (title) => recorder.start(title));
+
+  ipcMain.handle("recorder:stop", async () => {
+    try {
+      return await recorder.stop();
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
+
+  ipcMain.handle("recorder:active", () => recorder.active());
+
+  handle("recorder:abort", () => recorder.abort());
+
+  handle("recorder:save", (procedure) => recorder.saveAsRoutine(procedure));
 
   /* --- the agent -------------------------------------------------------- */
 
   ipcMain.handle("agent:get", () => agent.snapshot());
 
-  handle("agent:run", async ({ instruction, routineId, title }) => {
-    const result = await agent.run({ instruction, routineId, title });
+  ipcMain.handle("agent:history", (_e, limit) => {
+    const runs = db.get().runs ?? [];
+    return runs.slice(0, limit ?? 20).map((r) => ({
+      id: r.id,
+      title: r.routineTitle ?? r.instruction?.slice(0, 80) ?? "Untitled",
+      at: r.at,
+      durationSec: r.durationSec ?? 0,
+      outcome: r.outcome ?? "stopped",
+      note: r.note ?? "",
+      steps: r.steps?.length ?? 0,
+      changes: r.changes ?? [],
+    }));
+  });
+
+  handle("agent:run", async ({ instruction, routineId, title, mode }) => {
+    const result = await agent.run({ instruction, routineId, title, mode });
     return result;
   });
 
-  handle("agent:answer", (choice) => agent.answerApproval(choice));
-  handle("agent:abort", () => agent.abort());
+  handle("agent:answer", (id, choice) => agent.answerApproval(id, choice));
+  handle("agent:abort", (id) => agent.abort(id));
 
   /* --- the account ------------------------------------------------------ */
 
@@ -595,7 +856,7 @@ function register() {
     const win = BrowserWindow.getFocusedWindow();
     const picked = await dialog.showSaveDialog(win, {
       title: "Save your account record",
-      defaultPath: `mimic-account-${new Date().toISOString().slice(0, 10)}.json`,
+      defaultPath: `doppel-account-${new Date().toISOString().slice(0, 10)}.json`,
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (picked.canceled || !picked.filePath) return { ok: false, error: "cancelled" };
@@ -611,7 +872,6 @@ function register() {
   ipcMain.handle("windows:list", () => win32.listWindows());
 
   handle("app:reset", () => {
-    engine.abort();
     agent.abort();
     db.reset();
     brain.wipe();
@@ -625,6 +885,86 @@ function register() {
 
   handle("app:revealPath", (target) => {
     if (target && fs.existsSync(target)) shell.showItemInFolder(target);
+  });
+
+  /* --- resume ------------------------------------------------------------ */
+
+  ipcMain.handle("app:resumeLast", async () => {
+    const state = db.get();
+    const narration = state.narration ?? [];
+    /* Find the last non-sensitive narration with an app name. */
+    const last = narration.find((n) => n.app && !n.sensitive);
+    if (!last?.app) return { ok: false, reason: "nothing" };
+
+    try {
+      /* Try to bring that app to the foreground via PowerShell. */
+      const { execSync } = require("child_process");
+      execSync(
+        `powershell -NoProfile -Command "Start-Process '${last.app.replace(/'/g, "''")}'"`
+      );
+      return { ok: true, app: last.app, title: last.text };
+    } catch {
+      return { ok: false, reason: "launch-failed", app: last.app };
+    }
+  });
+
+  /* --- MCP integration --------------------------------------------------- */
+
+  ipcMain.handle("mcp:connectClaude", () => {
+    const platform = process.platform;
+    let configDir;
+    if (platform === "win32") {
+      configDir = path.join(process.env.APPDATA || "", "Claude");
+    } else if (platform === "darwin") {
+      configDir = path.join(require("os").homedir(), "Library", "Application Support", "Claude");
+    } else {
+      configDir = path.join(require("os").homedir(), ".config", "Claude");
+    }
+
+    const configFile = path.join(configDir, "claude_desktop_config.json");
+    const mcpScript = path.join(__dirname, "..", "mcp-server.js");
+
+    /* Read existing config or start fresh. */
+    let config = {};
+    try {
+      config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    } catch {
+      /* file doesn't exist yet — that's fine */
+    }
+
+    if (!config.mcpServers) config.mcpServers = {};
+    config.mcpServers.doppel = {
+      command: "node",
+      args: [mcpScript.replace(/\\/g, "/")],
+    };
+
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(configFile, JSON.stringify(config, null, 2), "utf8");
+      return { ok: true, path: configFile };
+    } catch (err) {
+      return { ok: false, detail: err.message };
+    }
+  });
+
+  ipcMain.handle("mcp:checkClaude", () => {
+    const platform = process.platform;
+    let configDir;
+    if (platform === "win32") {
+      configDir = path.join(process.env.APPDATA || "", "Claude");
+    } else if (platform === "darwin") {
+      configDir = path.join(require("os").homedir(), "Library", "Application Support", "Claude");
+    } else {
+      configDir = path.join(require("os").homedir(), ".config", "Claude");
+    }
+
+    const configFile = path.join(configDir, "claude_desktop_config.json");
+    try {
+      const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+      return { connected: !!config?.mcpServers?.doppel };
+    } catch {
+      return { connected: false };
+    }
   });
 
   db.subscribe(() => {});

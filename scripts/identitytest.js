@@ -14,12 +14,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const DATA = path.join(os.tmpdir(), "mimic-identity-test");
+const DATA = path.join(os.tmpdir(), "doppel-identity-test");
 const PORT = 4399;
 
-process.env.MIMIC_SERVER_DATA = DATA;
-process.env.MIMIC_SERVER_PORT = String(PORT);
-process.env.MIMIC_SERVER_HOST = "127.0.0.1";
+process.env.DOPPEL_SERVER_DATA = DATA;
+process.env.DOPPEL_SERVER_PORT = String(PORT);
+process.env.DOPPEL_SERVER_HOST = "127.0.0.1";
 
 fs.rmSync(DATA, { recursive: true, force: true });
 

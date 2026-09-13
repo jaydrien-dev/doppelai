@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Exercises Mimic's core against a real sandbox folder, without launching a
+ * Exercises Doppel's core against a real sandbox folder, without launching a
  * window. Electron is stubbed out with just enough surface for db/actions to
  * run; everything else — the miner, the executor, the undo journal — is the
  * code that ships.
@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SANDBOX = path.join(os.tmpdir(), "mimic-selftest");
+const SANDBOX = path.join(os.tmpdir(), "doppel-selftest");
 const STATE_DIR = path.join(SANDBOX, "appdata");
 const INBOX = path.join(SANDBOX, "Inbox");
 const FILED = path.join(SANDBOX, "Filed");
@@ -66,7 +66,6 @@ async function main() {
   for (const dir of [SANDBOX, STATE_DIR, INBOX, FILED]) fs.mkdirSync(dir, { recursive: true });
 
   const db = require("../electron/core/db");
-  const miner = require("../electron/core/miner");
   const actions = require("../electron/core/actions");
 
   db.init();
@@ -77,129 +76,7 @@ async function main() {
     s.permissions.actGui = false;
   });
 
-  /* ------------------------------------------------------- 1. the miner --- */
-
-  section("Mining routines out of raw observations");
-
-  const MINUTE = 60_000;
-  const start = Date.now() - 40 * 24 * 60 * MINUTE;
-
-  /** One stretch of work: a csv lands in Inbox, then gets moved to Filed. */
-  const session = (index) => {
-    const at = start + index * 30 * MINUTE; // well beyond the 90s idle gap
-    const name = `export-${index}.csv`;
-    return [
-      {
-        id: `e-${index}-a`,
-        at,
-        kind: "file.created",
-        path: path.join(INBOX, name),
-        root: SANDBOX,
-        dir: INBOX,
-        name,
-        ext: ".csv",
-        size: 100,
-      },
-      {
-        id: `e-${index}-b`,
-        at: at + 4000,
-        kind: "file.moved",
-        path: path.join(FILED, name),
-        from: path.join(INBOX, name),
-        fromDir: INBOX,
-        dir: FILED,
-        root: SANDBOX,
-        name,
-        ext: ".csv",
-      },
-    ];
-  };
-
-  const SIGHTINGS = 8;
-  db.update((s) => {
-    s.events = [];
-    for (let i = 0; i < SIGHTINGS; i++) s.events.push(...session(i));
-  });
-
-  const sessions = miner.sessionize(db.get().events);
-  check(
-    "the stream splits into one session per stretch",
-    sessions.length === SIGHTINGS,
-    `got ${sessions.length}`,
-  );
-
-  miner.mine();
-  let routines = db.get().routines;
-  check("a routine is mined from the repetition", routines.length === 1, `got ${routines.length}`);
-
-  const routine = routines[0];
-  check("it has both steps", routine?.stepLibrary.length === 2, `got ${routine?.stepLibrary.length}`);
-  check("repetition carried it to 100%", routine?.confidence === 100, `got ${routine?.confidence}`);
-  check("100% promoted it to ready", routine?.stage === "ready", `got ${routine?.stage}`);
-  check("it wrote itself an intent", Boolean(routine?.intent?.length > 10), routine?.intent);
-  check(
-    "the move step carries a real, executable action",
-    routine?.stepLibrary.some(
-      (s) => s.action.kind === "move" && s.action.from === INBOX && s.action.to === FILED,
-    ),
-  );
-  miner.mine();
-  check("mining again is idempotent", db.get().routines.length === 1);
-
-  /* --- window flapping must not become a hundred-step routine --- */
-  db.update((s) => {
-    s.routines = [];
-    const events = [];
-    for (let i = 0; i < 4; i++) {
-      const at = start + i * 30 * MINUTE;
-      // Tabbing between two apps twelve times in one stretch.
-      for (let k = 0; k < 12; k++) {
-        events.push({
-          id: `w-${i}-${k}`,
-          at: at + k * 2000,
-          kind: "window.focus",
-          app: k % 2 === 0 ? "Code" : "chrome",
-          title: k % 2 === 0 ? "mimic - VS Code" : "docs - Chrome",
-        });
-      }
-    }
-    s.events = events;
-  });
-  miner.mine();
-  const flap = db.get().routines[0];
-  check("alternating windows collapse to one step each", flap?.stepLibrary.length === 2,
-    String(flap?.stepLibrary.length));
-  check("so the title stays readable", flap && flap.title.length < 60, flap?.title);
-  check("and names each application once", flap && !/VS Code.*VS Code/.test(flap.title), flap?.title);
-
-  db.update((s) => {
-    s.routines = [];
-    s.events = [...session(0), ...session(1)];
-  });
-  miner.mine();
-  const shy = db.get().routines[0];
-  check("two sightings is not enough to be sure", shy && shy.confidence < 100, `got ${shy?.confidence}`);
-  check("and it stays in learning", shy?.stage === "learning", `got ${shy?.stage}`);
-
-  db.update((s) => {
-    s.routines = [];
-    const events = [];
-    for (let i = 0; i < SIGHTINGS; i++) {
-      const pair = session(i);
-      events.push(...(i % 2 === 0 ? pair : [pair[1], { ...pair[0], at: pair[1].at + 1000 }]));
-    }
-    s.events = events;
-  });
-  miner.mine();
-  const split = db.get().routines[0];
-  check(
-    "orderings that disagree hold confidence back",
-    split && split.confidence <= 72,
-    `got ${split?.confidence}`,
-  );
-  check("and it admits which part it's unsure of", Boolean(split?.unsure), split?.unsure);
-
-  /* ---------------------------------------------------- 2. the executor --- */
+  /* ---------------------------------------------------- 1. the executor --- */
 
   section("Carrying actions out for real");
 
@@ -593,7 +470,7 @@ async function main() {
   section("Remembering across restarts");
 
   db.flush();
-  const onDisk = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "mimic-state.json"), "utf8"));
+  const onDisk = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "doppel-state.json"), "utf8"));
   check("state is written to disk", Boolean(onDisk.version));
   check("watched folders survive", onDisk.observation.roots.includes(SANDBOX));
   check("there is no seed data anywhere", !JSON.stringify(onDisk).includes("Monday report"));
