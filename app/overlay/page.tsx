@@ -9,13 +9,11 @@ import { Mascot } from "@/components/Mascot";
 /**
  * Doppel's presence on the desktop.
  *
- * A small window that sits above everything in the corner. It does one thing —
- * start and stop watching — because that is the only control that has to be
- * reachable without opening anything. Everything else is a right-click away.
+ * A small window that sits above everything in the corner. Two interactions:
+ *   Left-click  → toggle screen watching on/off
+ *   Right-click → show Doppel's most recent thought
  *
- * It has no card, no panel and no chrome: on a transparent window the mascot
- * and its glow are the whole interface, and the surrounding pixels must stay
- * genuinely invisible.
+ * Everything else lives in the system tray menu.
  */
 export default function OverlayPage() {
   const connect = useDoppel((s) => s.connect);
@@ -77,8 +75,9 @@ export default function OverlayPage() {
       window.doppel?.overlayOpen("/mind/");
       return;
     }
-    /* Clicking the icon toggles the whisper/chat panel. */
-    window.doppel?.overlayToggleWhisper();
+    /* Left-click toggles screen watching on/off. */
+    setOptimistic(!watching);
+    window.doppel?.overlayToggleWatch();
   };
 
   const hasSomething = Boolean(bubbleText && !bubbleOpen);
@@ -97,7 +96,15 @@ export default function OverlayPage() {
       style={{ background: "transparent", WebkitAppRegion: "drag" } as React.CSSProperties}
       onContextMenu={(e) => {
         e.preventDefault();
-        window.doppel?.overlayMenu();
+        /* Right-click shows Doppel's most recent thought. */
+        const latest = narration[0];
+        if (latest?.text) {
+          setBubbleText(latest.text);
+          setBubbleOpen(true);
+        } else {
+          setBubbleText("Nothing on my mind yet.");
+          setBubbleOpen(true);
+        }
       }}
     >
       {/* Speech bubble — slides in above the icon when clicked */}

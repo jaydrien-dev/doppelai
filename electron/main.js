@@ -2,6 +2,8 @@ const {
   app,
   BrowserWindow,
   Menu,
+  Tray,
+  nativeImage,
   globalShortcut,
   ipcMain,
   protocol,
@@ -76,6 +78,7 @@ function baseUrl() {
 let deskWindow = null;
 let overlayWindow = null;
 let whisperWindow = null;
+let trayIcon = null;
 let quitting = false;
 
 function createDeskWindow() {
@@ -309,6 +312,80 @@ function unregisterWhisperHotkey() {
   }
 }
 
+/* --------------------------------------------------------------------------
+   System tray icon — always in the taskbar.
+
+   Right-click opens a context menu with the same actions as the overlay menu
+   plus a few extras. Left-click toggles the whisper panel.
+   -------------------------------------------------------------------------- */
+
+function createTray() {
+  /* In dev the icon is at build/icon.png; packaged it's in resources/. */
+  const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
+  const candidates = [
+    path.join(__dirname, "..", "build", iconFile),
+    path.join(process.resourcesPath || "", iconFile),
+  ];
+  let image = nativeImage.createEmpty();
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      try {
+        image = nativeImage.createFromPath(p).resize({ width: 16, height: 16 });
+        break;
+      } catch { /* try next */ }
+    }
+  }
+
+  trayIcon = new Tray(image);
+  trayIcon.setToolTip("Doppel");
+
+  const buildMenu = () => {
+    const state = db.get();
+    const watching = state.permissions.screen && !state.observation.paused;
+
+    return Menu.buildFromTemplate([
+      {
+        label: watching ? "Stop watching" : "Start watching",
+        click: () => toggleWatching(),
+      },
+      { type: "separator" },
+      { label: "Open Doppel", click: () => focusDesk("/") },
+      { label: "What it's thinking", click: () => focusDesk("/mind") },
+      { label: "Permissions", click: () => focusDesk("/permissions") },
+      { type: "separator" },
+      {
+        label: "Toggle chat",
+        click: () => {
+          if (whisperWindow && !whisperWindow.isDestroyed()) {
+            if (whisperWindow.isVisible()) whisperWindow.hide();
+            else { whisperWindow.show(); whisperWindow.focus(); }
+          } else {
+            createWhisperWindow();
+          }
+        },
+      },
+      { type: "separator" },
+      { label: "Quit Doppel", click: () => app.quit() },
+    ]);
+  };
+
+  trayIcon.setContextMenu(buildMenu());
+
+  /* Rebuild the menu on click so the watch label stays current. */
+  trayIcon.on("click", () => {
+    if (whisperWindow && !whisperWindow.isDestroyed()) {
+      if (whisperWindow.isVisible()) whisperWindow.hide();
+      else { whisperWindow.show(); whisperWindow.focus(); }
+    } else {
+      createWhisperWindow();
+    }
+  });
+
+  trayIcon.on("right-click", () => {
+    trayIcon.setContextMenu(buildMenu());
+  });
+}
+
 app.whenReady().then(() => {
   if (!isDev) {
     protocol.handle("app", async (request) => {
@@ -339,9 +416,11 @@ app.whenReady().then(() => {
   db.init();
   ipc.register();
 
-  /* On startup: just the overlay (tray icon) and the whisper panel.
-     The main window opens from the overlay's right-click menu. */
-  if (db.get().overlay?.enabled !== false) createOverlayWindow();
+  /* On startup: the overlay is always visible, plus tray icon and whisper.
+     The main window opens from the tray or overlay's right-click menu. */
+  db.update((s) => { s.overlay.enabled = true; }, { silent: true });
+  createOverlayWindow();
+  createTray();
   if (db.get().whisper?.enabled !== false) {
     registerWhisperHotkey();
     createWhisperWindow();
@@ -448,15 +527,6 @@ ipcMain.handle("overlay:open", (_event, route) => {
   return true;
 });
 
-ipcMain.handle("overlay:setEnabled", (_event, enabled) => {
-  db.update((s) => {
-    s.overlay.enabled = Boolean(enabled);
-  });
-  if (enabled) createOverlayWindow();
-  else if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
-  return true;
-});
-
 ipcMain.handle("overlay:home", () => {
   if (!overlayWindow || overlayWindow.isDestroyed()) return false;
   const home = overlayHome();
@@ -502,13 +572,6 @@ function moveOverlayHome() {
   const home = overlayHome();
   overlayWindow.setPosition(home.x, home.y);
   rememberOverlayPosition();
-}
-
-function hideOverlay() {
-  db.update((s) => {
-    s.overlay.enabled = false;
-  });
-  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
 }
 
 /**
