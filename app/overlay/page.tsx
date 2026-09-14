@@ -77,13 +77,8 @@ export default function OverlayPage() {
       window.doppel?.overlayOpen("/mind/");
       return;
     }
-    /* If Doppel has something to say, clicking toggles the speech bubble. */
-    if (bubbleText) {
-      setBubbleOpen((v) => !v);
-      return;
-    }
-    setOptimistic(!watching);
-    window.doppel?.overlayToggleWatch();
+    /* Clicking the icon toggles the whisper/chat panel. */
+    window.doppel?.overlayToggleWhisper();
   };
 
   const hasSomething = Boolean(bubbleText && !bubbleOpen);

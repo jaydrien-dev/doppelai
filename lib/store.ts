@@ -51,6 +51,7 @@ export interface DoppelBridge {
   overlayOpen: (route?: string) => Promise<unknown>;
   overlayMenu: () => Promise<unknown>;
   overlayToggleWatch: () => Promise<boolean>;
+  overlayToggleWhisper: () => Promise<boolean>;
   overlaySetEnabled: (on: boolean) => Promise<unknown>;
   overlayHome: () => Promise<unknown>;
 

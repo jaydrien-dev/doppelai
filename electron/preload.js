@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("doppel", {
   overlayOpen: (route) => invoke("overlay:open", route),
   overlayMenu: () => invoke("overlay:menu"),
   overlayToggleWatch: () => invoke("overlay:toggleWatch"),
+  overlayToggleWhisper: () => invoke("overlay:toggleWhisper"),
   overlaySetEnabled: (on) => invoke("overlay:setEnabled", on),
   overlayHome: () => invoke("overlay:home"),
 

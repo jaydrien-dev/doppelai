@@ -481,7 +481,6 @@ ipcMain.handle("overlay:menu", () => {
     { label: "Permissions", click: () => focusDesk("/permissions") },
     { type: "separator" },
     { label: "Move back to the corner", click: () => moveOverlayHome() },
-    { label: "Hide this overlay", click: () => hideOverlay() },
     { type: "separator" },
     { label: "Quit Doppel", click: () => app.quit() },
   ]);
@@ -527,6 +526,20 @@ function toggleWatching() {
 }
 
 ipcMain.handle("overlay:toggleWatch", () => toggleWatching());
+
+ipcMain.handle("overlay:toggleWhisper", () => {
+  if (whisperWindow && !whisperWindow.isDestroyed()) {
+    if (whisperWindow.isVisible()) {
+      whisperWindow.hide();
+    } else {
+      whisperWindow.show();
+      whisperWindow.focus();
+    }
+  } else {
+    createWhisperWindow();
+  }
+  return true;
+});
 
 ipcMain.handle("doppel:close-window", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
