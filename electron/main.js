@@ -320,20 +320,43 @@ function unregisterWhisperHotkey() {
    -------------------------------------------------------------------------- */
 
 function createTray() {
-  /* In dev the icon is at build/icon.png; packaged it's in resources/. */
   const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
   const candidates = [
+    /* dev: next to the electron/ folder */
     path.join(__dirname, "..", "build", iconFile),
+    /* packaged: extraResources copies icons here */
     path.join(process.resourcesPath || "", iconFile),
+    /* packaged fallback: electron-builder puts the app icon here too */
+    path.join(process.resourcesPath || "", "app.asar.unpacked", "build", iconFile),
+    /* absolute fallback: the exe's own icon */
+    process.execPath,
   ];
-  let image = nativeImage.createEmpty();
+  let image = null;
   for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      try {
-        image = nativeImage.createFromPath(p).resize({ width: 16, height: 16 });
+    if (!p) continue;
+    try {
+      if (!fs.existsSync(p)) continue;
+      image = nativeImage.createFromPath(p);
+      if (!image.isEmpty()) {
+        image = image.resize({ width: 16, height: 16 });
+        console.log("[tray] icon loaded from:", p);
         break;
-      } catch { /* try next */ }
+      }
+      image = null;
+    } catch { /* try next */ }
+  }
+  if (!image || image.isEmpty()) {
+    /* Last resort: generate a tiny colored square so the tray is always visible */
+    console.warn("[tray] no icon file found, using generated fallback");
+    const size = 16;
+    const buf = Buffer.alloc(size * size * 4);
+    for (let i = 0; i < size * size; i++) {
+      buf[i * 4] = 99;      // R
+      buf[i * 4 + 1] = 102;  // G
+      buf[i * 4 + 2] = 241;  // B (Doppel primary blue)
+      buf[i * 4 + 3] = 255;  // A
     }
+    image = nativeImage.createFromBuffer(buf, { width: size, height: size });
   }
 
   trayIcon = new Tray(image);

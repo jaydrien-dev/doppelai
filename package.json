@@ -1,6 +1,6 @@
 {
   "name": "doppel",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "A personal trusted execution engine that learns tasks by watching.",
   "author": "Doppel",
