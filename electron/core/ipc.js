@@ -19,6 +19,7 @@ const biometric = require("./biometric");
 const recorder = require("./recorder");
 const screen = require("./screen");
 const ingest = require("./ingest");
+const tokens = require("./tokens");
 
 /**
  * Everything the interface can ask for. The renderer holds no truth of its
@@ -495,7 +496,10 @@ function register() {
   );
 
   handle("vision:look", async () => {
+    const gate = tokens.canAfford("vision:look");
+    if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     const result = await vision.look({ reason: "you asked", force: true });
+    tokens.spend("vision:look");
     return result;
   });
 
@@ -609,13 +613,18 @@ function register() {
   /* Memories are kept as vectors and terse records; this is where they become
      English again, and only because someone asked. */
   ipcMain.handle("brain:ask", async (_e, question, history) => {
+    const gate = tokens.canAfford("brain:ask");
+    if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     try {
       const q = String(question ?? "");
       if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
-        return await lookAndAnswer(q, { history: history ?? [] });
+        const r = await lookAndAnswer(q, { history: history ?? [] });
+        tokens.spend("brain:ask");
+        return r;
       }
       const result = await brain.answer(q, { history: history ?? [] });
       if (result.ok && result.text) brain.rememberConversation(q, result.text);
+      tokens.spend("brain:ask");
       return result;
     } catch (err) {
       return { ok: false, reason: "error", detail: err.message };
@@ -625,10 +634,14 @@ function register() {
   /* Fast path — smaller context, low effort, no thinking. For the whisper panel
      where speed matters more than thoroughness. */
   ipcMain.handle("brain:ask-fast", async (_e, question, history) => {
+    const gate = tokens.canAfford("brain:ask-fast");
+    if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     try {
       const q = String(question ?? "");
       if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
-        return await lookAndAnswer(q, { fast: true, history: history ?? [] });
+        const r = await lookAndAnswer(q, { fast: true, history: history ?? [] });
+        tokens.spend("brain:ask-fast");
+        return r;
       }
       const result = await brain.answer(q, {
         fast: true,
@@ -636,6 +649,7 @@ function register() {
         onText: (delta) => broadcast("doppel:answer-stream", delta),
       });
       if (result.ok && result.text) brain.rememberConversation(q, result.text);
+      tokens.spend("brain:ask-fast");
       return result;
     } catch (err) {
       return { ok: false, reason: "error", detail: err.message };
@@ -828,7 +842,10 @@ function register() {
   });
 
   handle("agent:run", async ({ instruction, routineId, title, mode }) => {
+    const gate = tokens.canAfford("agent:run");
+    if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     const result = await agent.run({ instruction, routineId, title, mode });
+    tokens.spend("agent:run");
     return result;
   });
 
@@ -867,6 +884,16 @@ function register() {
   });
 
   handle("account:delete", () => account.deleteAccount());
+
+  /* --- billing ---------------------------------------------------------- */
+
+  ipcMain.handle("billing:status", () => tokens.status());
+  ipcMain.handle("billing:plans", () => tokens.getPlans());
+  ipcMain.handle("billing:costs", () => tokens.getCosts());
+  ipcMain.handle("billing:history", (_e, limit) => tokens.getHistory(limit));
+  ipcMain.handle("billing:tokenPacks", () => tokens.getTokenPacks());
+  handle("billing:setPlan", (plan) => tokens.setPlan(plan));
+  handle("billing:addTokens", (amount) => tokens.addTokens(amount));
 
   /* --- misc ------------------------------------------------------------- */
   ipcMain.handle("windows:list", () => win32.listWindows());

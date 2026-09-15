@@ -319,17 +319,21 @@ function unregisterWhisperHotkey() {
    plus a few extras. Left-click toggles the whisper panel.
    -------------------------------------------------------------------------- */
 
+/* Tiny 16x16 PNG encoded as base64 — a blue "D" circle.
+   Embedded so the tray icon is guaranteed to appear even if every file path fails. */
+const TRAY_ICON_DATA_URL =
+  "data:image/png;base64," +
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAbElEQVR4nGNgoAVI" +
+  "TvvImZz2MSQ57WM1FIPYnMRqBmn4kpz28T8aBolVE9K8CItGdLwIn82ENMNwNbpm" +
+  "ThzOxoW/oIQJNJCI1QzDIeQ6H9Mb1DCAYi9QFogURyNVEhKaS8hLymhhQl5mIhUA" +
+  "AHq9kbgpKM8rAAAAAElFTkSuQmCC";
+
 function createTray() {
   const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
   const candidates = [
-    /* dev: next to the electron/ folder */
     path.join(__dirname, "..", "build", iconFile),
-    /* packaged: extraResources copies icons here */
     path.join(process.resourcesPath || "", iconFile),
-    /* packaged fallback: electron-builder puts the app icon here too */
     path.join(process.resourcesPath || "", "app.asar.unpacked", "build", iconFile),
-    /* absolute fallback: the exe's own icon */
-    process.execPath,
   ];
   let image = null;
   for (const p of candidates) {
@@ -346,17 +350,8 @@ function createTray() {
     } catch { /* try next */ }
   }
   if (!image || image.isEmpty()) {
-    /* Last resort: generate a tiny colored square so the tray is always visible */
-    console.warn("[tray] no icon file found, using generated fallback");
-    const size = 16;
-    const buf = Buffer.alloc(size * size * 4);
-    for (let i = 0; i < size * size; i++) {
-      buf[i * 4] = 99;      // R
-      buf[i * 4 + 1] = 102;  // G
-      buf[i * 4 + 2] = 241;  // B (Doppel primary blue)
-      buf[i * 4 + 3] = 255;  // A
-    }
-    image = nativeImage.createFromBuffer(buf, { width: size, height: size });
+    console.warn("[tray] no icon file found, using embedded fallback");
+    image = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
   }
 
   trayIcon = new Tray(image);

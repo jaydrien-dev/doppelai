@@ -154,6 +154,18 @@ function emptyState() {
       current: { month: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 },
       months: {},
     },
+
+    /** Token economy — plan, balance, daily usage. */
+    billing: {
+      plan: "free",
+      tokenBalance: 0,
+      dailyUsed: 0,
+      dailyDate: "",
+      agentsToday: 0,
+      agentsDate: "",
+      totalSpent: 0,
+      history: [],
+    },
   };
 }
 
@@ -176,6 +188,7 @@ function migrate(loaded) {
       addons: { ...base.addons, ...(loaded.addons ?? {}) },
       security: { ...base.security, ...(loaded.security ?? {}) },
       usage: { ...base.usage, ...(loaded.usage ?? {}) },
+      billing: { ...base.billing, ...(loaded.billing ?? {}) },
       routines: loaded.routines ?? [],
       rejectedPatterns: loaded.rejectedPatterns ?? [],
     };
@@ -193,6 +206,7 @@ function migrate(loaded) {
     addons: { ...base.addons, ...(loaded.addons ?? {}) },
     security: { ...base.security, ...(loaded.security ?? {}) },
     usage: { ...base.usage, ...(loaded.usage ?? {}) },
+    billing: { ...base.billing, ...(loaded.billing ?? {}) },
     routines: loaded.routines ?? [],
     rejectedPatterns: loaded.rejectedPatterns ?? [],
   };
@@ -361,6 +375,14 @@ function publicState() {
       lockTimeout: s.security?.lockTimeout ?? 0,
     },
     usage: s.usage,
+    billing: {
+      plan: s.billing?.plan ?? "free",
+      tokenBalance: s.billing?.tokenBalance ?? 0,
+      dailyUsed: s.billing?.dailyUsed ?? 0,
+      dailyDate: s.billing?.dailyDate ?? "",
+      agentsToday: s.billing?.agentsToday ?? 0,
+      totalSpent: s.billing?.totalSpent ?? 0,
+    },
     narration: (s.narration ?? []).slice(0, 40),
     recentEvents: s.events.slice(-40).reverse(),
     routines: s.routines ?? [],

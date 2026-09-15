@@ -25,6 +25,10 @@ import type {
   RoutineProposal,
   SecurityState,
   WhisperState,
+  BillingStatus,
+  PlanInfo,
+  TokenEvent,
+  TokenPack,
 } from "./types";
 
 /**
@@ -97,6 +101,15 @@ export interface DoppelBridge {
   securitySetLockTimeout: (min: number) => Promise<unknown>;
   securityLock: () => Promise<unknown>;
   onUnlocked: (fn: (unlocked: boolean) => void) => () => void;
+
+  /* billing */
+  billingStatus: () => Promise<BillingStatus>;
+  billingPlans: () => Promise<PlanInfo[]>;
+  billingCosts: () => Promise<Record<string, number>>;
+  billingHistory: (limit?: number) => Promise<TokenEvent[]>;
+  billingTokenPacks: () => Promise<TokenPack[]>;
+  billingSetPlan: (plan: string) => Promise<{ ok: boolean; plan?: string }>;
+  billingAddTokens: (amount: number) => Promise<{ ok: boolean; balance?: number }>;
 
   /* updates */
   getUpdateStatus: () => Promise<{ state: string; version?: string | null; progress?: number | null }>;
@@ -271,6 +284,7 @@ const emptySnapshot = (): DoppelSnapshot => ({
   addons: { installed: {} },
   security: { biometric: false, lockTimeout: 0 },
   usage: { current: { month: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 }, months: {} },
+  billing: { plan: "free", tokenBalance: 0, dailyUsed: 0, dailyDate: "", agentsToday: 0, totalSpent: 0 },
   recentEvents: [],
 });
 
@@ -495,6 +509,19 @@ export const doppel = {
     api()?.securitySetBiometric(on) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
   securitySetLockTimeout: (min: number) => api()?.securitySetLockTimeout(min),
   securityLock: () => api()?.securityLock(),
+
+  /* billing */
+  billingStatus: () => api()?.billingStatus() ?? Promise.resolve({
+    plan: "free", planName: "Free", price: 0, tokenBalance: 0,
+    dailyUsed: 0, dailyLimit: 50, dailyRemaining: 50,
+    agentsToday: 0, agentsLimit: 3, totalSpent: 0, maxRoutines: 3,
+  }),
+  billingPlans: () => api()?.billingPlans() ?? Promise.resolve([]),
+  billingCosts: () => api()?.billingCosts() ?? Promise.resolve({}),
+  billingHistory: (limit?: number) => api()?.billingHistory(limit) ?? Promise.resolve([]),
+  billingTokenPacks: () => api()?.billingTokenPacks() ?? Promise.resolve([]),
+  billingSetPlan: (plan: string) => api()?.billingSetPlan(plan) ?? Promise.resolve({ ok: false }),
+  billingAddTokens: (amount: number) => api()?.billingAddTokens(amount) ?? Promise.resolve({ ok: false }),
 
   /* updates */
   getUpdateStatus: () => api()?.getUpdateStatus() ?? Promise.resolve({ state: "idle" }),

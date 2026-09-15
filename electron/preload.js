@@ -171,6 +171,15 @@ contextBridge.exposeInMainWorld("doppel", {
   appPaths: () => invoke("app:paths"),
   revealPath: (target) => invoke("app:revealPath", target),
 
+  /* billing */
+  billingStatus: () => invoke("billing:status"),
+  billingPlans: () => invoke("billing:plans"),
+  billingCosts: () => invoke("billing:costs"),
+  billingHistory: (limit) => invoke("billing:history", limit),
+  billingTokenPacks: () => invoke("billing:tokenPacks"),
+  billingSetPlan: (plan) => invoke("billing:setPlan", plan),
+  billingAddTokens: (amount) => invoke("billing:addTokens", amount),
+
   /* updates */
   getUpdateStatus: () => invoke("update:status"),
   checkForUpdate: () => invoke("update:check"),

@@ -441,8 +441,56 @@ export interface DoppelSnapshot {
     current: { month: string; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number; calls: number };
     months: Record<string, { month: string; inputTokens: number; outputTokens: number; cacheRead: number; cacheCreate: number; calls: number }>;
   };
+  billing: {
+    plan: string;
+    tokenBalance: number;
+    dailyUsed: number;
+    dailyDate: string;
+    agentsToday: number;
+    totalSpent: number;
+  };
   narration: NarrationLine[];
   recentEvents: ObservedEvent[];
   nudges: Nudge[];
   nudgeSettings: { enabled: boolean };
+}
+
+/* --------------------------------------------------------------------------
+   Billing — token economy
+   -------------------------------------------------------------------------- */
+
+export interface BillingStatus {
+  plan: string;
+  planName: string;
+  price: number;
+  tokenBalance: number;
+  dailyUsed: number;
+  dailyLimit: number | null;
+  dailyRemaining: number | null;
+  agentsToday: number;
+  agentsLimit: number | null;
+  totalSpent: number;
+  maxRoutines: number | null;
+}
+
+export interface PlanInfo {
+  id: string;
+  name: string;
+  dailyTokens: number | null;
+  maxRoutines: number | null;
+  maxAgentsPerDay: number | null;
+  price: number;
+}
+
+export interface TokenEvent {
+  date: number;
+  action: string;
+  cost: number;
+  balance?: number;
+}
+
+export interface TokenPack {
+  id: string;
+  tokens: number;
+  price: number;
 }
