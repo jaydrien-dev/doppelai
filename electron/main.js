@@ -430,7 +430,9 @@ app.whenReady().then(() => {
   if (!isDev) {
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    autoUpdater.checkForUpdatesAndNotify().catch((e) =>
+      console.error("[auto-update] startup check failed:", e?.message ?? e)
+    );
   }
 
   app.on("activate", () => {
@@ -507,12 +509,15 @@ autoUpdater.on("update-downloaded", (info) => {
   updateStatus = { state: "ready", version: info.version, progress: 100 };
   broadcastUpdate();
 });
-autoUpdater.on("error", () => {
+autoUpdater.on("error", (err) => {
+  console.error("[auto-update] error:", err?.message ?? err);
   updateStatus = { state: "idle", version: null, progress: null };
 });
 
 ipcMain.handle("update:status", () => updateStatus);
-ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch(() => {}));
+ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch((e) =>
+  console.error("[auto-update] manual check failed:", e?.message ?? e)
+));
 ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
 
 /* --------------------------------------------------------------- overlay -- */

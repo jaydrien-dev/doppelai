@@ -24,6 +24,7 @@ export default function OverlayPage() {
   const narration = useDoppel((s) => s.narration);
   const nudges = useDoppel((s) => s.nudges);
   const agents = useDoppel((s) => s.agents);
+  const updateStatus = useDoppel((s) => s.updateStatus);
   const agent = agents.find((t) => t.status === "parked") ?? agents.find((t) => t.status === "running") ?? null;
 
   const [hovered, setHovered] = useState(false);
@@ -215,6 +216,77 @@ export default function OverlayPage() {
           )}
           {label}
         </motion.span>
+      </AnimatePresence>
+
+      {/* Update progress — shown while downloading or ready to install */}
+      <AnimatePresence>
+        {(updateStatus.state === "downloading" || updateStatus.state === "ready") && (
+          <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.25 }}
+            onClick={() => {
+              if (updateStatus.state === "ready") window.doppel?.installUpdate();
+            }}
+            style={{
+              marginTop: 4,
+              width: 52,
+              cursor: updateStatus.state === "ready" ? "pointer" : "default",
+              WebkitAppRegion: "no-drag",
+            } as React.CSSProperties}
+          >
+            {updateStatus.state === "downloading" && (
+              <>
+                <div
+                  style={{
+                    height: 3,
+                    borderRadius: 2,
+                    background: "rgba(100, 116, 139, 0.25)",
+                    overflow: "hidden",
+                  }}
+                >
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${updateStatus.progress ?? 0}%` }}
+                    transition={{ duration: 0.3 }}
+                    style={{
+                      height: "100%",
+                      borderRadius: 2,
+                      background: "var(--primary)",
+                    }}
+                  />
+                </div>
+                <span
+                  style={{
+                    display: "block",
+                    textAlign: "center",
+                    fontSize: 8,
+                    color: "var(--slate)",
+                    marginTop: 2,
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  updating {updateStatus.progress ?? 0}%
+                </span>
+              </>
+            )}
+            {updateStatus.state === "ready" && (
+              <span
+                style={{
+                  display: "block",
+                  textAlign: "center",
+                  fontSize: 8,
+                  color: "var(--primary)",
+                  letterSpacing: "0.04em",
+                  animation: "doppel-breathe var(--pulse-cycle) var(--ease-calm) infinite",
+                }}
+              >
+                restart to update
+              </span>
+            )}
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
