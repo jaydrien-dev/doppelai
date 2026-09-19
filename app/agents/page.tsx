@@ -25,10 +25,9 @@ const AGENTS: AgentDef[] = [
     name: "Claude Desktop",
     description: "Anthropic's desktop app.",
     steps: [
-      "Open Claude Desktop",
-      'Go to Settings \u2192 Developer \u2192 "Edit Config"',
-      "Paste the config below into the file and save",
-      "Restart Claude Desktop",
+      'Open Settings \u2192 Connectors \u2192 "Add connector"',
+      "Paste the MCP URL above and name it Doppel",
+      "Or: Settings \u2192 Developer \u2192 Edit Config \u2192 paste the JSON config",
     ],
   },
   {
@@ -36,9 +35,8 @@ const AGENTS: AgentDef[] = [
     name: "Claude Code",
     description: "Anthropic's CLI agent.",
     steps: [
-      "Open your terminal",
-      "Run: claude mcp add doppel -- node <path>",
-      "Or paste the config into ~/.claude/settings.json",
+      "Run: claude mcp add-json doppel '{the JSON config}'",
+      "Or paste the JSON config into ~/.claude/settings.json",
     ],
   },
   {
@@ -46,10 +44,8 @@ const AGENTS: AgentDef[] = [
     name: "Cursor",
     description: "AI-powered code editor.",
     steps: [
-      "Open Cursor",
       "Go to Settings \u2192 MCP Servers \u2192 Add",
-      "Paste the config below",
-      "Restart Cursor",
+      "Paste the MCP URL or the JSON config",
     ],
   },
   {
@@ -57,10 +53,8 @@ const AGENTS: AgentDef[] = [
     name: "VS Code",
     description: "Microsoft's editor with Copilot.",
     steps: [
-      "Open VS Code",
-      "Open Settings (JSON) or .vscode/mcp.json",
-      'Add a "servers" key with the config below',
-      "Reload the window",
+      "Open command palette \u2192 MCP: Add Server",
+      "Paste the MCP URL, or add the JSON config to .vscode/mcp.json",
     ],
   },
   {
@@ -68,10 +62,8 @@ const AGENTS: AgentDef[] = [
     name: "Windsurf",
     description: "AI-native editor by Codeium.",
     steps: [
-      "Open Windsurf",
-      "Go to Settings \u2192 MCP",
-      "Add the config below",
-      "Restart Windsurf",
+      "Go to Settings \u2192 MCP \u2192 Add",
+      "Paste the MCP URL or the JSON config",
     ],
   },
   {
@@ -79,10 +71,8 @@ const AGENTS: AgentDef[] = [
     name: "ChatGPT Desktop",
     description: "OpenAI's desktop app.",
     steps: [
-      "Open ChatGPT Desktop",
       "Go to Settings \u2192 Beta \u2192 MCP Servers \u2192 Add",
-      "Paste the config below",
-      "Restart ChatGPT",
+      "Paste the MCP URL or the JSON config",
     ],
   },
   {
@@ -90,17 +80,17 @@ const AGENTS: AgentDef[] = [
     name: "Grok",
     description: "xAI's assistant.",
     steps: [
-      "Open Grok settings",
-      "Add the MCP server config below",
+      "Open Grok settings \u2192 MCP",
+      "Paste the MCP URL or the JSON config",
     ],
   },
   {
     id: "other",
     name: "Other MCP Client",
-    description: "Any app that supports the Model Context Protocol.",
+    description: "Any app that supports MCP.",
     steps: [
-      "Open your MCP client's settings",
-      "Add the config below as a new MCP server",
+      "Open your AI agent's settings",
+      "Add a new MCP server with the URL or JSON config below",
     ],
   },
 ];
@@ -114,8 +104,15 @@ export default function AgentsPage() {
   const inbox = useDoppel((s) => s.inbox);
   const now = useDoppel((s) => s.now);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
+  const [httpUrl, setHttpUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => { connect(); }, [connect]);
+  useEffect(() => {
+    doppel.mcpSnippet().then((r: { httpUrl?: string }) => {
+      if (r.httpUrl) setHttpUrl(r.httpUrl);
+    });
+  }, []);
 
   const activeAgent = AGENTS.find((a) => a.id === openAgent);
 
@@ -126,8 +123,45 @@ export default function AgentsPage() {
           Agents
         </h1>
         <p className="agent-voice" style={{ color: "var(--slate)", maxWidth: 520 }}>
-          Connect your AI tools to Doppel. Each agent gets its own chat and inbox.
+          Connect any AI to Doppel. Give it your memory, context, and a task inbox.
         </p>
+
+        {/* Universal MCP URL — always visible */}
+        {httpUrl && !activeAgent && (
+          <div className="pressed mt-6" style={{ padding: "16px 20px" }}>
+            <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginBottom: 6, fontWeight: 600 }}>
+              MCP Server URL — paste this into any AI agent
+            </p>
+            <div className="flex items-center gap-2">
+              <code
+                style={{
+                  flex: 1,
+                  padding: "10px 14px",
+                  borderRadius: "var(--radius-control)",
+                  background: "var(--bg-base)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                  fontFamily: "var(--font-mono, monospace)",
+                  fontWeight: 600,
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {httpUrl}
+              </code>
+              <button
+                onClick={() => { navigator.clipboard.writeText(httpUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                className="cursor-pointer shrink-0"
+                style={{
+                  fontSize: "var(--text-sm)",
+                  color: copied ? "#3a3" : "var(--primary)",
+                  background: "none", border: "none", fontWeight: 600,
+                }}
+              >
+                {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <AnimatePresence mode="wait">
@@ -255,17 +289,16 @@ function AgentList({
         <div className="pressed mt-5" style={{ padding: 24 }}>
           <div className="flex flex-col gap-4" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
             <p>
-              <strong style={{ color: "var(--ink)" }}>1. Connect</strong> — Click an agent, follow the setup steps
-              to add Doppel as an MCP server inside that app.
+              <strong style={{ color: "var(--ink)" }}>1. Connect</strong> — Paste the MCP URL into any AI agent
+              that supports connectors, or use the JSON config for file-based setup.
             </p>
             <p>
-              <strong style={{ color: "var(--ink)" }}>2. Chat</strong> — Send tasks to a specific agent from its
-              chat thread, or use the whisper panel ("tell Claude to...").
+              <strong style={{ color: "var(--ink)" }}>2. It just works</strong> — The agent automatically gets
+              access to your memory, screen context, and task inbox. No extra prompting needed.
             </p>
             <p>
-              <strong style={{ color: "var(--ink)" }}>3. Pick up</strong> — Open the agent and ask it to
-              <code style={{ background: "var(--surface-alt)", padding: "1px 6px", borderRadius: 4, margin: "0 3px" }}>check its Doppel inbox</code>.
-              It picks up the task, does the work, and reports back.
+              <strong style={{ color: "var(--ink)" }}>3. Queue tasks</strong> — Send work to any agent from here
+              or the whisper panel. The agent picks it up, does the work, and reports back.
             </p>
           </div>
         </div>

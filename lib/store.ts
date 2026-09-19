@@ -211,7 +211,7 @@ export interface DoppelBridge {
   resumeLast: () => Promise<{ ok: boolean; app?: string; title?: string; reason?: string }>;
 
   /* MCP integration */
-  mcpSnippet: () => Promise<{ snippet: unknown; scriptPath: string }>;
+  mcpSnippet: () => Promise<{ snippet: unknown; scriptPath: string; httpUrl?: string }>;
 
   forgetEntity: (id: string) => Promise<unknown>;
   listWindows: () => Promise<{ title: string; procId: number }[]>;
