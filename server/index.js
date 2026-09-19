@@ -61,6 +61,16 @@ function readBody(req) {
     });
     req.on("end", () => {
       if (!raw) return resolve({});
+      const ct = req.headers["content-type"] || "";
+      if (ct.includes("application/x-www-form-urlencoded")) {
+        /* OAuth token requests use form-encoded bodies */
+        const params = {};
+        for (const pair of raw.split("&")) {
+          const [k, v] = pair.split("=").map(decodeURIComponent);
+          if (k) params[k] = v ?? "";
+        }
+        return resolve(params);
+      }
       try {
         resolve(JSON.parse(raw));
       } catch {
@@ -460,6 +470,7 @@ async function mcpRelayRoute(req, res, accountId) {
     method: req.method,
     headers: {
       "content-type": req.headers["content-type"],
+      "accept": req.headers["accept"],
       "mcp-session-id": req.headers["mcp-session-id"],
     },
     body,
