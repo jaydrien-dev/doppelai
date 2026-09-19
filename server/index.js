@@ -350,9 +350,21 @@ let relaySeq = 0;
  * Route: POST /mcp/:accountId  (also GET, DELETE for full Streamable HTTP support)
  */
 async function mcpRelayRoute(req, res, accountId) {
+  /* GET without a session is a discovery/health probe from connectors like Claude.
+     Return a simple JSON-RPC server info response so the connector knows we exist. */
+  if (req.method === "GET" && !req.headers["mcp-session-id"]) {
+    return json(res, 200, {
+      jsonrpc: "2.0",
+      result: {
+        name: "doppel",
+        version: "3.0.0",
+        status: relayClients.has(accountId) ? "online" : "offline",
+      },
+    });
+  }
+
   const ws = relayClients.get(accountId);
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    res.setHeader("content-type", "application/json");
     return json(res, 502, { error: "device_offline", detail: "The user's Doppel is not connected." });
   }
 
