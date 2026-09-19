@@ -1575,14 +1575,97 @@ server.registerPrompt(
 
 const MCP_PORT = Number(process.env.DOPPEL_MCP_PORT ?? 4320);
 const httpMode = process.argv.includes("--http");
+const CERT_DIR = path.join(DATA_DIR, "certs");
+
+/**
+ * Generate a self-signed certificate for localhost.
+ * Stored in Doppel's data dir and reused across restarts.
+ */
+function ensureCert() {
+  const keyFile = path.join(CERT_DIR, "key.pem");
+  const certFile = path.join(CERT_DIR, "cert.pem");
+
+  if (fs.existsSync(keyFile) && fs.existsSync(certFile)) {
+    return { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) };
+  }
+
+  const { execSync } = require("node:child_process");
+  fs.mkdirSync(CERT_DIR, { recursive: true });
+
+  /* Use Node's built-in crypto to generate a self-signed cert via openssl
+     or fall back to node:crypto X509 generation. */
+  try {
+    execSync(
+      `openssl req -x509 -newkey rsa:2048 -keyout "${keyFile}" -out "${certFile}" ` +
+      `-days 3650 -nodes -subj "/CN=localhost" ` +
+      `-addext "subjectAltName=DNS:localhost,IP:127.0.0.1"`,
+      { stdio: "ignore" },
+    );
+  } catch {
+    /* openssl not available — use node:crypto */
+    const crypto = require("node:crypto");
+    const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+    });
+    const cert = new crypto.X509Certificate(
+      crypto.createSelfSignedCertificate
+        ? /* Node 22+ */ (() => {
+            const c = crypto.createSelfSignedCertificate({
+              key: privateKey,
+              subject: "CN=localhost",
+              extensions: [{
+                type: "subjectAltName",
+                value: "DNS:localhost,IP:127.0.0.1",
+              }],
+              notBefore: new Date(),
+              notAfter: new Date(Date.now() + 3650 * 86400000),
+            });
+            return c;
+          })()
+        : /* fallback: write raw key pair, server will work without SAN */
+          null,
+    );
+
+    if (!cert) {
+      /* Bare minimum: generate key pair and a minimal self-signed cert with openssl
+         alternative shell command for Windows */
+      const isWin = process.platform === "win32";
+      if (isWin) {
+        execSync(
+          `powershell -NoProfile -Command "` +
+          `$cert = New-SelfSignedCertificate -DnsName 'localhost' -CertStoreLocation 'Cert:\\CurrentUser\\My' -NotAfter (Get-Date).AddYears(10); ` +
+          `Export-PfxCertificate -Cert $cert -FilePath '${CERT_DIR}\\cert.pfx' -Password (ConvertTo-SecureString -String 'doppel' -Force -AsPlainText); ` +
+          `Remove-Item -Path $cert.PSPath"`,
+          { stdio: "ignore" },
+        );
+        /* Convert PFX to PEM */
+        const pfxFile = path.join(CERT_DIR, "cert.pfx");
+        if (fs.existsSync(pfxFile)) {
+          execSync(`openssl pkcs12 -in "${pfxFile}" -out "${certFile}" -clcerts -nokeys -passin pass:doppel`, { stdio: "ignore" });
+          execSync(`openssl pkcs12 -in "${pfxFile}" -out "${keyFile}" -nocerts -nodes -passin pass:doppel`, { stdio: "ignore" });
+          fs.unlinkSync(pfxFile);
+        }
+      }
+    } else {
+      fs.writeFileSync(keyFile, privateKey.export({ type: "pkcs8", format: "pem" }));
+      fs.writeFileSync(certFile, cert.toString());
+    }
+  }
+
+  if (!fs.existsSync(keyFile) || !fs.existsSync(certFile)) {
+    throw new Error("Could not generate TLS certificate for MCP HTTPS server");
+  }
+
+  return { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) };
+}
 
 async function main() {
   loadVectors();
   loadEmbeddingModel().catch(() => {});
 
   if (httpMode) {
-    /* ---- Streamable HTTP mode ---- */
-    const http = require("node:http");
+    /* ---- Streamable HTTPS mode ---- */
+    const https = require("node:https");
     const { randomUUID } = require("node:crypto");
     const { StreamableHTTPServerTransport } = require(
       require("node:path").join(
@@ -1591,10 +1674,12 @@ async function main() {
       ),
     );
 
+    const tls = ensureCert();
+
     /* One transport per session, keyed by session ID. */
     const sessions = new Map();
 
-    const httpServer = http.createServer(async (req, res) => {
+    const handler = async (req, res) => {
       /* CORS — needed for browser-based connectors */
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -1603,7 +1688,7 @@ async function main() {
       if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
       /* Only serve the /mcp path */
-      const url = new URL(req.url, `http://localhost:${MCP_PORT}`);
+      const url = new URL(req.url, `https://localhost:${MCP_PORT}`);
       if (url.pathname !== "/mcp") {
         res.writeHead(404);
         res.end(JSON.stringify({ error: "Not found. MCP endpoint is /mcp" }));
@@ -1613,11 +1698,9 @@ async function main() {
       const sessionId = req.headers["mcp-session-id"];
 
       if (sessionId && sessions.has(sessionId)) {
-        /* Existing session — route to its transport */
         const transport = sessions.get(sessionId);
         await transport.handleRequest(req, res);
       } else if (!sessionId && req.method === "POST") {
-        /* New session — initialize */
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
         });
@@ -1625,17 +1708,17 @@ async function main() {
           if (transport.sessionId) sessions.delete(transport.sessionId);
         };
         await server.connect(transport);
-        /* handleRequest will set the session header in the response */
         await transport.handleRequest(req, res);
         if (transport.sessionId) sessions.set(transport.sessionId, transport);
       } else {
         res.writeHead(400);
         res.end(JSON.stringify({ error: "Bad request — missing or invalid session" }));
       }
-    });
+    };
 
-    httpServer.listen(MCP_PORT, "127.0.0.1", () => {
-      console.error(`[doppel-mcp] HTTP server running at http://127.0.0.1:${MCP_PORT}/mcp`);
+    const httpsServer = https.createServer(tls, handler);
+    httpsServer.listen(MCP_PORT, "127.0.0.1", () => {
+      console.error(`[doppel-mcp] HTTPS server running at https://127.0.0.1:${MCP_PORT}/mcp`);
       console.error(`[doppel-mcp] Brain: ${BRAIN_DIR}`);
     });
   } else {
