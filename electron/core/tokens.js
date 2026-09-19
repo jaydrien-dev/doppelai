@@ -28,7 +28,6 @@ const COST = {
   "brain:consolidate": 1,
   "brain:ingest":      3,
   "brain:morningBrief":2,
-  "agent:run":         10,
   "whisper:ask":       2,
   "whisper:transcribe":1,
   "nudge:evaluate":    1,
@@ -40,43 +39,34 @@ const PLANS = {
   free: {
     name: "Free",
     dailyTokens: 50,
-    maxRoutines: 3,
-    maxAgentsPerDay: 3,
     price: 0,
   },
   pro: {
     name: "Pro",
     dailyTokens: Infinity,
-    maxRoutines: Infinity,
-    maxAgentsPerDay: Infinity,
     price: 2000, // cents — $20/mo
   },
   paygo: {
     name: "Pay-as-you-go",
     dailyTokens: 0, // uses purchased balance only
-    maxRoutines: Infinity,
-    maxAgentsPerDay: Infinity,
     price: 0, // per-token
   },
 };
 
 const TOKEN_PACKS = [
-  { id: "pack_100",  tokens: 100,  price: 100 },   // $1
-  { id: "pack_500",  tokens: 500,  price: 500 },   // $5
-  { id: "pack_2000", tokens: 2000, price: 1500 },  // $15 (discount)
-  { id: "pack_5000", tokens: 5000, price: 3000 },  // $30 (bigger discount)
+  { id: "pack_100",  tokens: 100,  price: 100,  stripePriceId: "price_1UFw8UGPQDGH6ygY5meqjAWI" },
+  { id: "pack_500",  tokens: 500,  price: 500,  stripePriceId: "price_1UFw8jGPQDGH6ygYdATY7wPt" },
+  { id: "pack_2000", tokens: 2000, price: 1500, stripePriceId: "price_1UFw95GPQDGH6ygY9KYQvKa7" },
+  { id: "pack_5000", tokens: 5000, price: 3000, stripePriceId: "price_1UFw9sGPQDGH6ygYyP3C7abz" },
 ];
+
+const STRIPE_PRO_PRICE_ID = "price_1UFwALGPQDGH6ygYesHAfUCL";
 
 /* ------------------------------------------------------------------ state */
 
 function todayKey() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function monthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 /** Ensure the billing state exists and is for today. */
@@ -88,8 +78,6 @@ function ensureBilling() {
       tokenBalance: 0,       // purchased tokens (paygo)
       dailyUsed: 0,           // tokens used today (free plan)
       dailyDate: todayKey(),   // which day dailyUsed is for
-      agentsToday: 0,
-      agentsDate: todayKey(),
       totalSpent: 0,           // all-time tokens consumed
       history: [],             // recent transactions [{date, action, cost, balance}]
     };
@@ -100,8 +88,6 @@ function ensureBilling() {
   if (s.billing.dailyDate !== todayKey()) {
     s.billing.dailyUsed = 0;
     s.billing.dailyDate = todayKey();
-    s.billing.agentsToday = 0;
-    s.billing.agentsDate = todayKey();
     db.flush();
   }
 
@@ -143,17 +129,6 @@ function canAfford(action) {
     };
   }
 
-  // Free plan: check agent limit
-  if (action === "agent:run" && billing.agentsToday >= plan.maxAgentsPerDay) {
-    return {
-      allowed: false,
-      cost,
-      reason: "agent_limit",
-      used: billing.agentsToday,
-      limit: plan.maxAgentsPerDay,
-    };
-  }
-
   return { allowed: true, cost };
 }
 
@@ -178,10 +153,6 @@ function spend(action) {
 
   billing.dailyUsed += cost;
   billing.totalSpent += cost;
-
-  if (action === "agent:run") {
-    billing.agentsToday += 1;
-  }
 
   trackHistory(action, cost);
   db.flush();
@@ -232,10 +203,7 @@ function status() {
     dailyUsed: billing.dailyUsed,
     dailyLimit: plan.dailyTokens === Infinity ? null : plan.dailyTokens,
     dailyRemaining: plan.dailyTokens === Infinity ? null : Math.max(0, plan.dailyTokens - billing.dailyUsed),
-    agentsToday: billing.agentsToday,
-    agentsLimit: plan.maxAgentsPerDay === Infinity ? null : plan.maxAgentsPerDay,
     totalSpent: billing.totalSpent,
-    maxRoutines: plan.maxRoutines === Infinity ? null : plan.maxRoutines,
   };
 
   return result;
@@ -255,8 +223,6 @@ function getPlans() {
     id,
     name: p.name,
     dailyTokens: p.dailyTokens === Infinity ? null : p.dailyTokens,
-    maxRoutines: p.maxRoutines === Infinity ? null : p.maxRoutines,
-    maxAgentsPerDay: p.maxAgentsPerDay === Infinity ? null : p.maxAgentsPerDay,
     price: p.price,
   }));
 }

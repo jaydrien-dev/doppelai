@@ -1,6 +1,6 @@
 {
   "name": "doppel",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "private": true,
   "description": "A personal trusted execution engine that learns tasks by watching.",
   "author": "Doppel",
@@ -32,8 +32,14 @@
       "!node_modules/**/chrome-*/**"
     ],
     "extraResources": [
-      { "from": "build/icon.png", "to": "icon.png" },
-      { "from": "build/icon.ico", "to": "icon.ico" }
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "asarUnpack": [
       "node_modules/sharp/**/*",
@@ -62,14 +68,28 @@
       "target": "dmg",
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
-      "hardenedRuntime": true,
+      "identity": null,
+      "hardenedRuntime": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Doppel watches your screen to learn how you work.",
+        "NSMicrophoneUsageDescription": "Doppel needs microphone access for voice commands.",
+        "NSAccessibilityUsageDescription": "Doppel uses accessibility to understand which app you're using."
+      }
     },
     "dmg": {
       "contents": [
-        { "x": 130, "y": 220 },
-        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "linux": {
@@ -100,6 +120,7 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "stripe": "^22.6.2",
     "zod": "^4.5.4",
     "zustand": "^5.0.14"
   },

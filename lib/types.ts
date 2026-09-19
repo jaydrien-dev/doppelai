@@ -118,6 +118,7 @@ export interface WhisperState {
   hotkey: string;
   position: { x: number; y: number } | null;
   autoDismiss: number;
+  micSensitivity: number;
 }
 
 /** One exact thing read off the screen — a quote or a figure. */
@@ -211,7 +212,7 @@ export interface ContextPack {
 }
 
 /* --------------------------------------------------------------------------
-   The agent
+   Brain patterns — detected repeated behaviors
    -------------------------------------------------------------------------- */
 
 export interface BrainPattern {
@@ -224,49 +225,6 @@ export interface BrainPattern {
   firstSeen: number;
   instruction: string;
   episodeIds: string[];
-}
-
-/** A finished agent run, as stored in the db. */
-export interface AgentRun {
-  id: string;
-  title: string;
-  at: number;
-  durationSec: number;
-  outcome: "clean" | "stopped";
-  note: string;
-  steps: number;
-  changes: string[];
-}
-
-export type AgentStatus = "running" | "parked" | "stopping" | "finished" | "stopped";
-
-export interface AgentTask {
-  id: string;
-  routineId: string | null;
-  title: string;
-  instruction: string;
-  status: AgentStatus;
-  mode: "background" | "foreground";
-  step: number;
-  startedAt: number;
-  narration: { at: number; text: string }[];
-  changes: string[];
-  irreversible: boolean;
-  recalled: number;
-  parked: {
-    rule: "delete" | "irreversible" | "outside" | "gui" | "files" | "unknown";
-    detail: string;
-    action: Record<string, unknown>;
-    at: number;
-  } | null;
-  summary: {
-    outcome: "done" | "stopped";
-    text: string;
-    changed: string[];
-    incomplete: string[];
-    durationSec: number;
-    steps: number;
-  } | null;
 }
 
 export interface Entity {
@@ -295,74 +253,6 @@ export interface Nudge {
   detail: string | null;
   /** Which observation triggered this nudge. */
   episodeId: string;
-}
-
-/* --------------------------------------------------------------------------
-   Routines — learned automation from observed patterns
-   -------------------------------------------------------------------------- */
-
-export interface RoutineSchedule {
-  kind: "daily" | "on-launch" | "manual";
-  timeHint: string;           // "09:00"
-  daysOfWeek: number[];       // 0=Sun..6=Sat
-}
-
-export interface Routine {
-  id: string;
-  instruction: string;
-  title: string;
-  patternId: string;
-  sourceApp: string;
-  schedule: RoutineSchedule;
-  enabled: boolean;
-  createdAt: number;
-  lastRunAt: number | null;
-  lastOutcome: "done" | "stopped" | null;
-  runCount: number;
-}
-
-export interface RoutineProposal {
-  patternId: string;
-  title: string;
-  instruction: string;
-  sourceApp: string;
-  schedule: RoutineSchedule;
-  reason: string;             // "I noticed you do this every weekday morning"
-  count: number;              // times observed
-}
-
-/* --------------------------------------------------------------------------
-   Workflow recording — learned procedures
-   -------------------------------------------------------------------------- */
-
-export interface ProcedureStep {
-  action: string;
-  location: string;
-  expected: string;
-}
-
-export interface ProcedureParam {
-  name: string;
-  description: string;
-  example: string;
-}
-
-export interface RecordedProcedure {
-  title: string;
-  app: string;
-  steps: ProcedureStep[];
-  parameters: ProcedureParam[];
-  summary: string;
-  recordedAt: number;
-  episodeCount: number;
-}
-
-export interface RecordingSession {
-  sessionId: string;
-  title: string;
-  startedAt: number;
-  steps: number;
-  durationSec: number;
 }
 
 /* --------------------------------------------------------------------------
@@ -446,13 +336,14 @@ export interface DoppelSnapshot {
     tokenBalance: number;
     dailyUsed: number;
     dailyDate: string;
-    agentsToday: number;
     totalSpent: number;
   };
   narration: NarrationLine[];
   recentEvents: ObservedEvent[];
   nudges: Nudge[];
   nudgeSettings: { enabled: boolean };
+  guide: GuideWalkthrough;
+  inbox: InboxTask[];
 }
 
 /* --------------------------------------------------------------------------
@@ -467,18 +358,13 @@ export interface BillingStatus {
   dailyUsed: number;
   dailyLimit: number | null;
   dailyRemaining: number | null;
-  agentsToday: number;
-  agentsLimit: number | null;
   totalSpent: number;
-  maxRoutines: number | null;
 }
 
 export interface PlanInfo {
   id: string;
   name: string;
   dailyTokens: number | null;
-  maxRoutines: number | null;
-  maxAgentsPerDay: number | null;
   price: number;
 }
 
@@ -493,4 +379,50 @@ export interface TokenPack {
   id: string;
   tokens: number;
   price: number;
+  stripePriceId: string;
+}
+
+/* --------------------------------------------------------------------------
+   Inbox — task queue between user and external AI agents
+   -------------------------------------------------------------------------- */
+
+export type InboxStatus = "pending" | "approved" | "claimed" | "done" | "failed" | "rejected";
+
+export interface InboxTask {
+  id: string;
+  createdAt: number;
+  status: InboxStatus;
+  instruction: string;
+  /** Who created this task. */
+  source: "user" | "nudge" | "system";
+  /** Which agent this task is directed to, or "any". */
+  target: string;
+  /** Which external agent claimed it (e.g. "Claude Desktop", "Cursor"). */
+  agent: string | null;
+  claimedAt: number | null;
+  /** The agent's response when done. */
+  result: string | null;
+  completedAt: number | null;
+}
+
+/* --------------------------------------------------------------------------
+   Guide — Clicky-style walkthrough pointer overlay
+   -------------------------------------------------------------------------- */
+
+export interface GuidePoint {
+  x: number;
+  y: number;
+  instruction: string;
+  step: number | null;
+  total: number | null;
+  action: string | null;
+}
+
+export interface GuideWalkthrough {
+  active: boolean;
+  goal?: string;
+  step?: number;
+  total?: number;
+  instruction?: string;
+  reason?: string;
 }

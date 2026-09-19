@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { ago } from "@/lib/time";
-import type { AccountOverview, BillingStatus, PlanInfo, TokenPack } from "@/lib/types";
+import type { AccountOverview } from "@/lib/types";
 import { Pulse } from "@/components/Pulse";
 import { Mascot } from "@/components/Mascot";
 import { Button, SectionHeading } from "@/components/ui";
@@ -64,8 +64,6 @@ export default function AccountPage() {
           </motion.p>
         )}
       </AnimatePresence>
-
-      <BillingSection />
 
       {!account.signedIn ? (
         <SignIn onNote={setNote} onDone={refresh} />
@@ -251,6 +249,8 @@ function SignedIn({
   const [confirming, setConfirming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [password, setPassword] = useState("");
+  const [deviceName, setDeviceName] = useState("");
+  const [serverUrl, setServerUrl] = useState("");
 
   const devices = overview?.devices ?? [];
 
@@ -380,6 +380,63 @@ function SignedIn({
         </section>
       )}
 
+      {/* ------------------------------------------------------ rename device */}
+      <section className="mb-14">
+        <SectionHeading>{voice.account.renameTitle}</SectionHeading>
+        <div className="pressed" style={{ padding: 26 }}>
+          <p className="agent-voice" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+            {voice.account.renameBody}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Field
+              value={deviceName}
+              onChange={setDeviceName}
+              placeholder={account.deviceName ?? "This machine"}
+              className="flex-1"
+            />
+            <Button
+              onClick={async () => {
+                await doppel.renameDevice(deviceName);
+                onNote(voice.account.renamed);
+                setDeviceName("");
+                onRefresh();
+              }}
+              disabled={!deviceName.trim()}
+            >
+              Rename
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {/* -------------------------------------------------- identity server */}
+      <section className="mb-14">
+        <SectionHeading>{voice.account.serverTitle}</SectionHeading>
+        <div className="pressed" style={{ padding: 26 }}>
+          <p className="agent-voice" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+            {voice.account.serverBody}
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Field
+              value={serverUrl}
+              onChange={setServerUrl}
+              placeholder={account.server ?? "http://127.0.0.1:4319"}
+              className="flex-1"
+            />
+            <Button
+              onClick={async () => {
+                await doppel.setAccountServer(serverUrl);
+                onNote(voice.account.serverUpdated);
+                setServerUrl("");
+              }}
+              disabled={!serverUrl.trim()}
+            >
+              Update
+            </Button>
+          </div>
+        </div>
+      </section>
+
       {/* ----------------------------------------------------------- export */}
       <section className="mb-14">
         <SectionHeading>{voice.account.exportTitle}</SectionHeading>
@@ -448,151 +505,6 @@ function SignedIn({
         </div>
       </section>
     </>
-  );
-}
-
-/* --------------------------------------------------------------------------- */
-
-function BillingSection() {
-  const billing = useDoppel((s) => s.billing);
-  const [status, setStatus] = useState<BillingStatus | null>(null);
-  const [plans, setPlans] = useState<PlanInfo[]>([]);
-  const [packs, setPacks] = useState<TokenPack[]>([]);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    doppel.billingStatus().then(setStatus);
-    doppel.billingPlans().then(setPlans);
-    doppel.billingTokenPacks().then(setPacks);
-  }, [billing.plan, billing.dailyUsed, billing.tokenBalance]);
-
-  if (!status) return null;
-
-  const dailyPct = status.dailyLimit
-    ? Math.min(100, Math.round((status.dailyUsed / status.dailyLimit) * 100))
-    : 0;
-
-  return (
-    <section className="mb-14">
-      <SectionHeading>Plan &amp; usage</SectionHeading>
-
-      {/* Current plan card */}
-      <div className="raised" style={{ padding: 26 }}>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
-              {status.planName} plan
-            </p>
-            <p className="mt-1" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-              {status.plan === "free" && `${status.dailyRemaining ?? 0} of ${status.dailyLimit} tokens remaining today`}
-              {status.plan === "pro" && "Unlimited usage"}
-              {status.plan === "paygo" && `${status.tokenBalance} tokens in your balance`}
-            </p>
-          </div>
-          <p style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-            {status.totalSpent} tokens used all time
-          </p>
-        </div>
-
-        {/* Daily usage bar (free plan) */}
-        {status.dailyLimit && (
-          <div className="mt-5">
-            <div
-              style={{
-                height: 6,
-                borderRadius: 3,
-                background: "var(--bg-base)",
-                boxShadow: "var(--elev-pressed-sm)",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  height: "100%",
-                  width: `${dailyPct}%`,
-                  borderRadius: 3,
-                  background: dailyPct > 80 ? "var(--rose)" : "var(--primary)",
-                  transition: "width 0.3s ease",
-                }}
-              />
-            </div>
-            <p className="micro-label mt-2">
-              {status.dailyUsed} / {status.dailyLimit} tokens used today
-              {status.agentsLimit && ` \u00b7 ${status.agentsToday} / ${status.agentsLimit} agent runs`}
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Plan selector */}
-      <div className="mt-5 flex flex-wrap gap-3">
-        {plans.map((plan) => (
-          <button
-            key={plan.id}
-            onClick={async () => {
-              setBusy(true);
-              await doppel.billingSetPlan(plan.id);
-              const s = await doppel.billingStatus();
-              setStatus(s);
-              setBusy(false);
-            }}
-            disabled={busy || status.plan === plan.id}
-            className="raised flex-1"
-            style={{
-              padding: "18px 20px",
-              cursor: status.plan === plan.id ? "default" : "pointer",
-              opacity: busy ? 0.6 : 1,
-              borderLeft: status.plan === plan.id ? "3px solid var(--primary)" : "3px solid transparent",
-              textAlign: "left",
-              minWidth: 160,
-            }}
-          >
-            <p style={{ fontWeight: 600, fontSize: "var(--text-sm)" }}>{plan.name}</p>
-            <p className="mt-1" style={{ fontSize: "var(--text-micro)", color: "var(--slate)" }}>
-              {plan.price === 0
-                ? plan.dailyTokens
-                  ? `${plan.dailyTokens} tokens/day`
-                  : "Per-token pricing"
-                : `$${(plan.price / 100).toFixed(0)}/mo \u00b7 unlimited`}
-            </p>
-            {plan.maxAgentsPerDay && (
-              <p style={{ fontSize: "var(--text-micro)", color: "var(--slate)" }}>
-                {plan.maxAgentsPerDay} agent runs/day
-              </p>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* Token packs (pay-as-you-go) */}
-      {status.plan === "paygo" && (
-        <div className="mt-5">
-          <p className="mb-3" style={{ fontSize: "var(--text-sm)", fontWeight: 600 }}>
-            Buy tokens
-          </p>
-          <div className="flex flex-wrap gap-3">
-            {packs.map((pack) => (
-              <Button
-                key={pack.id}
-                onClick={async () => {
-                  setBusy(true);
-                  await doppel.billingAddTokens(pack.tokens);
-                  const s = await doppel.billingStatus();
-                  setStatus(s);
-                  setBusy(false);
-                }}
-                disabled={busy}
-              >
-                {pack.tokens} tokens &middot; ${(pack.price / 100).toFixed(2)}
-              </Button>
-            ))}
-          </div>
-          <p className="micro-label mt-2">
-            Balance: {status.tokenBalance} tokens
-          </p>
-        </div>
-      )}
-    </section>
   );
 }
 

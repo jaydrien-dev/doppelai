@@ -94,9 +94,10 @@ function emptyState() {
     /** The voice hotkey panel. */
     whisper: {
       enabled: true,
-      hotkey: "Ctrl+Shift+Space",
+      hotkey: "CommandOrControl+Shift+Space",
       position: null,
       autoDismiss: 0,
+      micSensitivity: 80,
     },
 
     /** Proactive suggestions surfaced by the nudge system. */
@@ -135,12 +136,6 @@ function emptyState() {
     /** Installed add-ons and their configuration. */
     addons: { installed: {} },
 
-    /** Learned routines — patterns Doppel has detected and the user accepted. */
-    routines: [],
-
-    /** Pattern IDs the user declined, so we don't propose them again. */
-    rejectedPatterns: [],
-
     /** Security — biometric lock, etc. */
     security: {
       /** Require Windows Hello to unlock Doppel. */
@@ -161,8 +156,6 @@ function emptyState() {
       tokenBalance: 0,
       dailyUsed: 0,
       dailyDate: "",
-      agentsToday: 0,
-      agentsDate: "",
       totalSpent: 0,
       history: [],
     },
@@ -189,8 +182,6 @@ function migrate(loaded) {
       security: { ...base.security, ...(loaded.security ?? {}) },
       usage: { ...base.usage, ...(loaded.usage ?? {}) },
       billing: { ...base.billing, ...(loaded.billing ?? {}) },
-      routines: loaded.routines ?? [],
-      rejectedPatterns: loaded.rejectedPatterns ?? [],
     };
   }
   return {
@@ -207,8 +198,6 @@ function migrate(loaded) {
     security: { ...base.security, ...(loaded.security ?? {}) },
     usage: { ...base.usage, ...(loaded.usage ?? {}) },
     billing: { ...base.billing, ...(loaded.billing ?? {}) },
-    routines: loaded.routines ?? [],
-    rejectedPatterns: loaded.rejectedPatterns ?? [],
   };
 }
 
@@ -380,13 +369,20 @@ function publicState() {
       tokenBalance: s.billing?.tokenBalance ?? 0,
       dailyUsed: s.billing?.dailyUsed ?? 0,
       dailyDate: s.billing?.dailyDate ?? "",
-      agentsToday: s.billing?.agentsToday ?? 0,
       totalSpent: s.billing?.totalSpent ?? 0,
     },
     narration: (s.narration ?? []).slice(0, 40),
     recentEvents: s.events.slice(-40).reverse(),
-    routines: s.routines ?? [],
+    inbox: readInbox(),
   };
+}
+
+function readInbox() {
+  try {
+    const inboxFile = path.join(dir ?? app.getPath("userData"), "inbox.json");
+    const raw = JSON.parse(fs.readFileSync(inboxFile, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
 }
 
 function reset() {

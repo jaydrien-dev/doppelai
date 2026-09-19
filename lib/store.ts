@@ -5,8 +5,6 @@ import type {
   AccountOverview,
   AccountState,
   AddonInfo,
-  AgentRun,
-  AgentTask,
   BrainEntity,
   BrainEpisode,
   BrainPattern,
@@ -14,15 +12,12 @@ import type {
   ContextPack,
   Entity,
   DoppelSnapshot,
+  InboxTask,
   MorningBrief,
   NarrationLine,
   Nudge,
   ObservedEvent,
   Permissions,
-  RecordedProcedure,
-  RecordingSession,
-  Routine,
-  RoutineProposal,
   SecurityState,
   WhisperState,
   BillingStatus,
@@ -64,6 +59,7 @@ export interface DoppelBridge {
   whisperHome: () => Promise<unknown>;
   whisperSetAutoDismiss: (sec: number) => Promise<unknown>;
   whisperHide: () => Promise<unknown>;
+  whisperSetMicSensitivity: (level: number) => Promise<unknown>;
 
   /* the account */
   requestLink: (email: string) => Promise<{ ok: boolean; error?: string; link?: string }>;
@@ -84,14 +80,37 @@ export interface DoppelBridge {
 
   getState: () => Promise<DoppelSnapshot>;
   onState: (fn: (s: DoppelSnapshot) => void) => () => void;
-  onAgent: (fn: (t: AgentTask[]) => void) => () => void;
   onNarration: (fn: (line: NarrationLine) => void) => () => void;
   onNudge: (fn: (nudges: Nudge[]) => void) => () => void;
   onAnswerStream: (fn: (delta: string) => void) => () => void;
+  onThinkingStream: (fn: (delta: string) => void) => () => void;
   getNudges: () => Promise<Nudge[]>;
   dismissNudge: (id: string) => Promise<unknown>;
   actOnNudge: (id: string) => Promise<{ ok: boolean; nudge?: Nudge }>;
   nudgeSetEnabled: (on: boolean) => Promise<unknown>;
+
+  /* inbox */
+  inboxList: () => Promise<InboxTask[]>;
+  inboxCreate: (instruction: string, autoApprove?: boolean, target?: string) => Promise<InboxTask | null>;
+  inboxApprove: (id: string) => Promise<{ ok: boolean }>;
+  inboxReject: (id: string) => Promise<{ ok: boolean }>;
+  inboxRetry: (id: string) => Promise<{ ok: boolean }>;
+  inboxClear: () => Promise<{ ok: boolean }>;
+
+  /* guide — Clicky-style walkthroughs */
+  guideFindElement: (description: string) => Promise<{ ok: boolean; screenX?: number; screenY?: number; label?: string }>;
+  guidePointAt: (x: number, y: number, instruction: string) => Promise<unknown>;
+  guideClearPointer: () => Promise<unknown>;
+  guideStartWalkthrough: (goal: string) => Promise<{ ok: boolean; steps?: number; firstStep?: string }>;
+  guideNextStep: () => Promise<{ ok: boolean; done?: boolean; step?: number; instruction?: string }>;
+  guidePrevStep: () => Promise<{ ok: boolean; step?: number }>;
+  guideEndWalkthrough: () => Promise<{ ok: boolean }>;
+  guideDoStep: () => Promise<{ ok: boolean; action?: string; x?: number; y?: number }>;
+  guideGetState: () => Promise<{ active: boolean; goal?: string; step?: number; total?: number; instruction?: string }>;
+  onGuidePoint: (fn: (data: unknown) => void) => () => void;
+  onGuideClear: (fn: (data: unknown) => void) => () => void;
+  onGuideWalkthrough: (fn: (data: unknown) => void) => () => void;
+  onGuideInstruction: (fn: (data: unknown) => void) => () => void;
 
   /* security / biometric */
   securityAvailable: () => Promise<{ available: boolean; detail?: string }>;
@@ -110,6 +129,8 @@ export interface DoppelBridge {
   billingTokenPacks: () => Promise<TokenPack[]>;
   billingSetPlan: (plan: string) => Promise<{ ok: boolean; plan?: string }>;
   billingAddTokens: (amount: number) => Promise<{ ok: boolean; balance?: number }>;
+  billingCheckout: (priceId: string) => Promise<{ ok: boolean; sessionId?: string; error?: string }>;
+  billingVerifyPurchase: (sessionId: string) => Promise<{ ok: boolean; type?: string; tokens?: number }>;
 
   /* updates */
   getUpdateStatus: () => Promise<{ state: string; version?: string | null; progress?: number | null }>;
@@ -130,7 +151,6 @@ export interface DoppelBridge {
     empty?: boolean;
     phase?: string;
     detail?: string;
-    isInstruction?: boolean;
   }>;
   setAutoWatch: (on: boolean) => Promise<unknown>;
   setDetail: (level: "light" | "thorough") => Promise<unknown>;
@@ -170,41 +190,6 @@ export interface DoppelBridge {
   ingestDocument: (filePath?: string) => Promise<{ ok: boolean; episodes?: number; files?: string[]; title?: string; detail?: string }>;
   ingestSupported: () => Promise<string[]>;
 
-  /* workflow recording */
-  recorderStart: (title?: string) => Promise<{ ok: boolean; sessionId?: string; detail?: string }>;
-  recorderStop: () => Promise<{
-    ok: boolean;
-    sessionId?: string;
-    procedure?: RecordedProcedure;
-    episodeCount?: number;
-    durationSec?: number;
-    detail?: string;
-  }>;
-  recorderActive: () => Promise<RecordingSession | null>;
-  recorderAbort: () => Promise<{ ok: boolean }>;
-  recorderSave: (procedure: RecordedProcedure) => Promise<{ ok: boolean; routine?: Routine }>;
-
-  /* routines */
-  listRoutines: () => Promise<Routine[]>;
-  routineProposals: () => Promise<RoutineProposal[]>;
-  acceptRoutine: (patternId: string) => Promise<{ ok: boolean; routine?: Routine }>;
-  rejectRoutine: (patternId: string) => Promise<{ ok: boolean }>;
-  removeRoutine: (routineId: string) => Promise<{ ok: boolean }>;
-  toggleRoutine: (routineId: string) => Promise<{ ok: boolean }>;
-  runRoutineNow: (routineId: string) => Promise<{ ok: boolean; taskId?: string }>;
-
-  /* the agent */
-  getAgent: () => Promise<AgentTask[]>;
-  agentHistory: (limit?: number) => Promise<AgentRun[]>;
-  runAgent: (input: {
-    instruction: string;
-    routineId?: string | null;
-    title?: string;
-    mode?: "background" | "foreground";
-  }) => Promise<{ ok: boolean; taskId?: string; reason?: string; detail?: string }>;
-  answerAgent: (id: string, choice: "approve" | "skip" | "stop") => Promise<unknown>;
-  abortAgent: (id?: string) => Promise<unknown>;
-
   setPaused: (paused: boolean) => Promise<unknown>;
   setPermissions: (patch: Partial<Permissions>) => Promise<unknown>;
   addRoot: () => Promise<{ ok: boolean; root?: string }>;
@@ -226,8 +211,7 @@ export interface DoppelBridge {
   resumeLast: () => Promise<{ ok: boolean; app?: string; title?: string; reason?: string }>;
 
   /* MCP integration */
-  mcpConnectClaude: () => Promise<{ ok: boolean; path?: string; detail?: string }>;
-  mcpCheckClaude: () => Promise<{ connected: boolean }>;
+  mcpSnippet: () => Promise<{ snippet: unknown; scriptPath: string }>;
 
   forgetEntity: (id: string) => Promise<unknown>;
   listWindows: () => Promise<{ title: string; procId: number }[]>;
@@ -263,7 +247,7 @@ const emptySnapshot = (): DoppelSnapshot => ({
     openaiHint: "",
   },
   overlay: { enabled: true, position: null },
-  whisper: { enabled: true, hotkey: "Ctrl+Shift+Space", position: null, autoDismiss: 0 },
+  whisper: { enabled: true, hotkey: "Ctrl+Shift+Space", position: null, autoDismiss: 0, micSensitivity: 80 },
   account: {
     signedIn: false,
     email: null,
@@ -279,12 +263,14 @@ const emptySnapshot = (): DoppelSnapshot => ({
   entities: [],
   nudges: [],
   nudgeSettings: { enabled: true },
+  guide: { active: false },
+  inbox: [],
   devices: [],
   stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0 },
   addons: { installed: {} },
   security: { biometric: false, lockTimeout: 0 },
   usage: { current: { month: "", inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 }, months: {} },
-  billing: { plan: "free", tokenBalance: 0, dailyUsed: 0, dailyDate: "", agentsToday: 0, totalSpent: 0 },
+  billing: { plan: "free", tokenBalance: 0, dailyUsed: 0, dailyDate: "", totalSpent: 0 },
   recentEvents: [],
 });
 
@@ -295,7 +281,6 @@ export interface DoppelState extends DoppelSnapshot {
   connected: boolean;
   now: number;
 
-  agents: AgentTask[];
   updateStatus: { state: string; version?: string | null; progress?: number | null };
   panelOpen: boolean;
   flash: string | null;
@@ -317,7 +302,6 @@ export const useDoppel = create<DoppelState>((set) => ({
   connected: false,
   now: Date.now(),
 
-  agents: [],
   updateStatus: { state: "idle" },
   panelOpen: false,
   flash: null,
@@ -332,13 +316,17 @@ export const useDoppel = create<DoppelState>((set) => ({
     set({ connected: true });
 
     api.getState().then((s) => set({ ...s, ready: true }));
-    api.getAgent().then((t) => set({ agents: t ?? [] }));
     api.getNudges().then((n) => set({ nudges: n }));
     api.getUpdateStatus().then((s) => set({ updateStatus: s }));
-    api.onAgent((t) => set({ agents: t ?? [] }));
     api.onNudge((n) => set({ nudges: n }));
     api.onUpdate((s) => set({ updateStatus: s }));
-    api.onState((s) => set({ ...s, ready: true }));
+    api.onState((s) => set((prev) => {
+      const next: Record<string, unknown> = { ready: true };
+      for (const k of Object.keys(s) as (keyof typeof s)[]) {
+        if (prev[k] !== s[k]) next[k] = s[k];
+      }
+      return next;
+    }));
   },
 
   tick: () => set({ now: Date.now() }),
@@ -378,6 +366,7 @@ export const doppel = {
   whisperSetEnabled: (on: boolean) => api()?.whisperSetEnabled(on),
   whisperHome: () => api()?.whisperHome(),
   whisperSetAutoDismiss: (sec: number) => api()?.whisperSetAutoDismiss(sec),
+  whisperSetMicSensitivity: (level: number) => api()?.whisperSetMicSensitivity(level),
   lookNow: () =>
     api()?.lookNow() ?? Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE }),
 
@@ -425,37 +414,6 @@ export const doppel = {
     api()?.ingestDocument(filePath) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
   ingestSupported: () => api()?.ingestSupported() ?? Promise.resolve([]),
 
-  /* workflow recording */
-  recorderStart: (title?: string) =>
-    api()?.recorderStart(title) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
-  recorderStop: () =>
-    api()?.recorderStop() ?? Promise.resolve({ ok: false, detail: "Not connected." }),
-  recorderActive: () => api()?.recorderActive() ?? Promise.resolve(null),
-  recorderAbort: () => api()?.recorderAbort() ?? Promise.resolve({ ok: false }),
-  recorderSave: (procedure: RecordedProcedure) =>
-    api()?.recorderSave(procedure) ?? Promise.resolve({ ok: false }),
-
-  /* routines */
-  listRoutines: () => api()?.listRoutines() ?? Promise.resolve([]),
-  routineProposals: () => api()?.routineProposals() ?? Promise.resolve([]),
-  acceptRoutine: (patternId: string) =>
-    api()?.acceptRoutine(patternId) ?? Promise.resolve({ ok: false }),
-  rejectRoutine: (patternId: string) =>
-    api()?.rejectRoutine(patternId) ?? Promise.resolve({ ok: false }),
-  removeRoutine: (routineId: string) =>
-    api()?.removeRoutine(routineId) ?? Promise.resolve({ ok: false }),
-  toggleRoutine: (routineId: string) =>
-    api()?.toggleRoutine(routineId) ?? Promise.resolve({ ok: false }),
-  runRoutineNow: (routineId: string) =>
-    api()?.runRoutineNow(routineId) ?? Promise.resolve({ ok: false }),
-
-  /* the agent */
-  agentHistory: (limit?: number) => api()?.agentHistory(limit) ?? Promise.resolve([]),
-  runAgent: (input: { instruction: string; routineId?: string | null; title?: string; mode?: "background" | "foreground" }) =>
-    api()?.runAgent(input) ?? Promise.resolve({ ok: false, reason: "no-bridge", detail: NO_BRIDGE }),
-  answerAgent: (id: string, choice: "approve" | "skip" | "stop") => api()?.answerAgent(id, choice),
-  abortAgent: (id?: string) => api()?.abortAgent(id),
-
   /* the account */
   requestLink: (email: string) =>
     api()?.requestLink(email) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
@@ -491,11 +449,43 @@ export const doppel = {
   addonDisconnect: (id: string) =>
     api()?.addonDisconnect(id) ?? Promise.resolve({ ok: false }),
 
+  /* guide — Clicky-style walkthroughs */
+  guideFindElement: (description: string) =>
+    api()?.guideFindElement(description) ?? Promise.resolve({ ok: false }),
+  guidePointAt: (x: number, y: number, instruction: string) =>
+    api()?.guidePointAt(x, y, instruction),
+  guideClearPointer: () => api()?.guideClearPointer(),
+  guideStartWalkthrough: (goal: string) =>
+    api()?.guideStartWalkthrough(goal) ?? Promise.resolve({ ok: false }),
+  guideNextStep: () =>
+    api()?.guideNextStep() ?? Promise.resolve({ ok: false }),
+  guidePrevStep: () =>
+    api()?.guidePrevStep() ?? Promise.resolve({ ok: false }),
+  guideEndWalkthrough: () =>
+    api()?.guideEndWalkthrough() ?? Promise.resolve({ ok: false }),
+  guideDoStep: () =>
+    api()?.guideDoStep() ?? Promise.resolve({ ok: false }),
+  guideGetState: () =>
+    api()?.guideGetState() ?? Promise.resolve({ active: false }),
+
   /* nudges */
   dismissNudge: (id: string) => api()?.dismissNudge(id),
   actOnNudge: (id: string) =>
     api()?.actOnNudge(id) ?? Promise.resolve({ ok: false }),
   nudgeSetEnabled: (on: boolean) => api()?.nudgeSetEnabled(on),
+
+  /* inbox */
+  inboxList: () => api()?.inboxList() ?? Promise.resolve([]),
+  inboxCreate: (instruction: string, autoApprove = true, target?: string) =>
+    api()?.inboxCreate(instruction, autoApprove, target) ?? Promise.resolve(null),
+  inboxApprove: (id: string) =>
+    api()?.inboxApprove(id) ?? Promise.resolve({ ok: false }),
+  inboxReject: (id: string) =>
+    api()?.inboxReject(id) ?? Promise.resolve({ ok: false }),
+  inboxRetry: (id: string) =>
+    api()?.inboxRetry(id) ?? Promise.resolve({ ok: false }),
+  inboxClear: () =>
+    api()?.inboxClear() ?? Promise.resolve({ ok: false }),
 
   /* security / biometric */
   securityAvailable: () =>
@@ -514,7 +504,7 @@ export const doppel = {
   billingStatus: () => api()?.billingStatus() ?? Promise.resolve({
     plan: "free", planName: "Free", price: 0, tokenBalance: 0,
     dailyUsed: 0, dailyLimit: 50, dailyRemaining: 50,
-    agentsToday: 0, agentsLimit: 3, totalSpent: 0, maxRoutines: 3,
+    totalSpent: 0,
   }),
   billingPlans: () => api()?.billingPlans() ?? Promise.resolve([]),
   billingCosts: () => api()?.billingCosts() ?? Promise.resolve({}),
@@ -522,11 +512,17 @@ export const doppel = {
   billingTokenPacks: () => api()?.billingTokenPacks() ?? Promise.resolve([]),
   billingSetPlan: (plan: string) => api()?.billingSetPlan(plan) ?? Promise.resolve({ ok: false }),
   billingAddTokens: (amount: number) => api()?.billingAddTokens(amount) ?? Promise.resolve({ ok: false }),
+  billingCheckout: (priceId: string) => api()?.billingCheckout(priceId) ?? Promise.resolve({ ok: false, error: "not_connected" }),
+  billingVerifyPurchase: (sessionId: string) => api()?.billingVerifyPurchase(sessionId) ?? Promise.resolve({ ok: false }),
 
   /* updates */
   getUpdateStatus: () => api()?.getUpdateStatus() ?? Promise.resolve({ state: "idle" }),
   checkForUpdate: () => api()?.checkForUpdate(),
   installUpdate: () => api()?.installUpdate(),
+
+  /* MCP */
+  mcpSnippet: () =>
+    api()?.mcpSnippet() ?? Promise.resolve({ snippet: {}, scriptPath: "" }),
 
   forgetEntity: (id: string) => api()?.forgetEntity(id),
   listWindows: () => api()?.listWindows() ?? Promise.resolve([]),
@@ -542,18 +538,15 @@ export const doppel = {
 
 export type {
   AddonInfo,
-  AgentRun,
   Entity,
+  InboxTask,
   MorningBrief,
   Nudge,
   ObservedEvent,
-  AgentTask,
   NarrationLine,
   BrainEntity,
   BrainEpisode,
   BrainPattern,
   BrainStats,
   ContextPack,
-  Routine,
-  RoutineProposal,
 };

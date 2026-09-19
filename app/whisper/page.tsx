@@ -5,9 +5,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { RichText } from "@/components/RichText";
-import type { MorningBrief, Nudge } from "@/lib/types";
+import type { InboxTask, MorningBrief, Nudge } from "@/lib/types";
 
-type Phase = "idle" | "recording" | "transcribing" | "thinking" | "answer" | "working";
+type Phase = "idle" | "recording" | "transcribing" | "thinking" | "answer";
 
 /**
  * The whisper panel — a glassmorphic floating surface that appears on a global
@@ -18,12 +18,15 @@ export default function WhisperPage() {
   const connect = useDoppel((s) => s.connect);
   const openaiReady = useDoppel((s) => s.ai.openaiConfigured);
   const aiConfigured = useDoppel((s) => s.ai.configured);
-  const agents = useDoppel((s) => s.agents);
   const nudges = useDoppel((s) => s.nudges);
+  const inbox = useDoppel((s) => s.inbox);
+  const micSensitivity = useDoppel((s) => s.whisper.micSensitivity ?? 80);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [input, setInput] = useState("");
   const [answer, setAnswer] = useState("");
+  const [thinking, setThinking] = useState("");
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const [history, setHistory] = useState<{ role: string; content: string }[]>([]);
   const [conversational, setConversational] = useState(false);
   const [brief, setBrief] = useState<MorningBrief | null>(null);
@@ -34,12 +37,10 @@ export default function WhisperPage() {
   const rafRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const streamRef = useRef("");
+  const thinkingRef = useRef("");
   const convoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const liveAgents = agents.filter((t) => ["running", "parked", "stopping"].includes(t.status));
-  const doneAgents = agents.filter((t) => t.summary && !["running", "parked", "stopping"].includes(t.status));
-  const visibleAgents = [...liveAgents, ...doneAgents];
-  const agentBusy = liveAgents.length > 0;
+  const convoRetriesRef = useRef(0);
+  const wtRef = useRef<{ active: boolean; goal?: string; step?: number; total?: number; instruction?: string }>({ active: false });
 
   useEffect(() => {
     connect();
@@ -49,12 +50,41 @@ export default function WhisperPage() {
 
   /* Stream listener — tokens arrive one at a time from brain:ask-fast.
      Accumulate into streamRef and push to answer state so the user sees
-     words appear as they're generated (~300ms to first token vs ~3s). */
+     words appear as they're generated (~300ms to first token vs ~3s).
+     Guard: only transition to "answer" if we're still waiting for this
+     response — don't override "recording" / "transcribing" if the user
+     has already moved on to the next question. */
   useEffect(() => {
     const cleanup = window.doppel?.onAnswerStream?.((delta: string) => {
       streamRef.current += delta;
       setAnswer(streamRef.current);
-      setPhase("answer");
+      setPhase((prev) =>
+        prev === "thinking" || prev === "answer" ? "answer" : prev,
+      );
+      setThinkingExpanded(false);
+    });
+    return () => cleanup?.();
+  }, []);
+
+  /* Thinking stream — shows Doppel's reasoning as it arrives, like Claude.
+     Same guard: ignore stale tokens if the user has moved on. */
+  useEffect(() => {
+    const cleanup = window.doppel?.onThinkingStream?.((delta: string) => {
+      setPhase((prev) => {
+        if (prev !== "thinking" && prev !== "answer") return prev;
+        thinkingRef.current += delta;
+        setThinking(thinkingRef.current);
+        return prev;
+      });
+    });
+    return () => cleanup?.();
+  }, []);
+
+  /* Track walkthrough state so "next" / "back" / "stop" work mid-walkthrough. */
+  useEffect(() => {
+    const cleanup = window.doppel?.onGuideWalkthrough?.((data: unknown) => {
+      const d = data as { active: boolean; goal?: string; step?: number; total?: number; instruction?: string };
+      wtRef.current = d;
     });
     return () => cleanup?.();
   }, []);
@@ -86,7 +116,7 @@ export default function WhisperPage() {
     if (!conversational || !openaiReady) return;
     if (convoTimerRef.current) { clearTimeout(convoTimerRef.current); convoTimerRef.current = null; }
 
-    if ((phase === "idle" || phase === "answer") && !agentBusy && !recorderRef.current) {
+    if ((phase === "idle" || phase === "answer") && !recorderRef.current) {
       convoTimerRef.current = setTimeout(() => {
         convoTimerRef.current = null;
         startRecording(phase === "answer");
@@ -97,7 +127,7 @@ export default function WhisperPage() {
       if (convoTimerRef.current) { clearTimeout(convoTimerRef.current); convoTimerRef.current = null; }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversational, phase, agentBusy]);
+  }, [conversational, phase]);
 
   /* Auto-grow textarea when input changes (e.g. from transcription). */
   useEffect(() => {
@@ -107,36 +137,6 @@ export default function WhisperPage() {
       el.style.height = `${el.scrollHeight}px`;
     }
   }, [input]);
-
-  /* When a foreground task finishes during "working" phase, show its result. */
-  const fgTask = agents.find((t) => t.mode === "foreground" && t.summary);
-  useEffect(() => {
-    if (phase === "working" && fgTask?.summary) {
-      setAnswer(
-        fgTask.summary.outcome === "done"
-          ? `Done. ${fgTask.summary.text}`
-          : `Stopped. ${fgTask.summary.text}`,
-      );
-      setPhase("answer");
-      scheduleDismiss();
-    }
-  }, [fgTask?.summary, phase]);
-
-  /* When a background task finishes while we're idle, surface its result
-     as an answer so the user doesn't miss it. */
-  const lastDoneBg = doneAgents.find((t) => t.mode === "background");
-  const lastDoneIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (phase === "idle" && lastDoneBg?.summary && lastDoneBg.id !== lastDoneIdRef.current) {
-      lastDoneIdRef.current = lastDoneBg.id;
-      setAnswer(
-        lastDoneBg.summary.outcome === "done"
-          ? `Done: ${lastDoneBg.summary.text}`
-          : `Stopped: ${lastDoneBg.summary.text}`,
-      );
-      setPhase("answer");
-    }
-  }, [lastDoneBg?.id, lastDoneBg?.summary, phase]);
 
   /* ---------------------------------------------------------------- record */
 
@@ -162,21 +162,20 @@ export default function WhisperPage() {
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         stopSilenceDetection();
+        clearTimeout(safetyTimer);
         const blob = new Blob(chunksRef.current, { type: mime ?? "audio/webm" });
 
         const minSpeechFrames = 12;
         if (blob.size < 100 || speechFramesRef.current < minSpeechFrames) {
-          /* Not enough speech — restart silently in convo mode,
-             otherwise go idle. */
-          if (conversational) {
-            setTimeout(() => startRecording(true), 400);
-          } else {
-            setPhase("idle");
-            inputRef.current?.focus();
-          }
+          convoRetriesRef.current += 1;
+          if (convoRetriesRef.current >= 3) setConversational(false);
+          setPhase("idle");
+          inputRef.current?.focus();
           return;
         }
 
+        /* Successful recording — reset retry counter. */
+        convoRetriesRef.current = 0;
         await handleVoice(blob);
       };
 
@@ -186,8 +185,11 @@ export default function WhisperPage() {
          visible — only flip to "recording" once speech is detected. */
       if (!silent) setPhase("recording");
 
-      /* Silence detection via Web Audio API volume monitoring. */
+      /* Silence detection via Web Audio API — speech-band only.
+         Human speech lives in ~300–3000 Hz.  By measuring energy only in
+         that band, background noise (fans, typing, music, hum) is ignored. */
       const audioCtx = new AudioContext();
+      await audioCtx.resume(); /* Electron may start suspended */
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 512;
@@ -196,33 +198,89 @@ export default function WhisperPage() {
 
       const data = new Uint8Array(analyser.frequencyBinCount);
       let speechDetected = false;
+      let lastSpeechAt = 0;
+      let peakVolume = 0;
+      let consecutiveAbove = 0;
+
+      /* Map the speech band to FFT bin indices. */
+      const binHz = audioCtx.sampleRate / analyser.fftSize;
+      const speechLo = Math.max(1, Math.round(300 / binHz));
+      const speechHi = Math.min(data.length - 1, Math.round(3000 / binHz));
+
+      /* Adaptive threshold — measure ambient noise for 20 frames (~0.33s).
+         Track the MINIMUM so speech during calibration doesn't inflate it. */
+      let calibrationFrames = 0;
+      let noiseFloor = 255;
+      let speechThreshold = micSensitivity; /* fallback until calibrated */
+
+      /* Safety net — if no speech detected in 8s, stop. */
+      const safetyTimer = setTimeout(() => {
+        if (recorderRef.current?.state === "recording" && !speechDetected) {
+          recorderRef.current.stream?.getTracks().forEach((t) => t.stop());
+          recorderRef.current = null;
+          stopSilenceDetection();
+          convoRetriesRef.current += 1;
+          if (convoRetriesRef.current >= 3) setConversational(false);
+          setPhase("idle");
+          inputRef.current?.focus();
+        }
+      }, 8000);
 
       const check = () => {
         if (!recorderRef.current || recorderRef.current.state !== "recording") return;
         analyser.getByteFrequencyData(data);
-        const volume = data.reduce((a, b) => a + b, 0) / data.length;
+        let sum = 0;
+        for (let i = speechLo; i <= speechHi; i++) sum += data[i];
+        const volume = sum / (speechHi - speechLo + 1);
 
-        if (volume > 50) {
-          if (!speechDetected) {
-            speechDetected = true;
-            /* Show "recording" as soon as voice is detected, even in
-               silent mode — the user needs to see we heard them. */
-            setPhase("recording");
+        /* Calibration — first 20 frames, learn the noise floor. */
+        if (calibrationFrames < 20) {
+          calibrationFrames++;
+          if (volume < noiseFloor) noiseFloor = volume;
+          if (calibrationFrames === 20) {
+            speechThreshold = Math.max(25, noiseFloor * 1.5 + 15);
           }
-          speechFramesRef.current += 1;
-          if (silenceRef.current) {
-            clearTimeout(silenceRef.current);
-            silenceRef.current = null;
-          }
-        } else if (speechDetected && !silenceRef.current) {
-          silenceRef.current = setTimeout(() => {
-            if (recorderRef.current?.state === "recording") {
-              recorderRef.current.stop();
-              recorderRef.current = null;
-              setPhase("transcribing");
-            }
-          }, 2500);
+          rafRef.current = requestAnimationFrame(check);
+          return;
         }
+
+        /* After speech starts, raise the bar — require volume to be at
+           least 40% of the peak.  This prevents background noise (which
+           is much quieter than speech) from counting as "still talking". */
+        const activeThreshold = speechDetected
+          ? Math.max(speechThreshold, peakVolume * 0.4)
+          : speechThreshold;
+
+        if (volume > activeThreshold) {
+          consecutiveAbove++;
+          if (volume > peakVolume) peakVolume = volume;
+          /* Require 3 consecutive frames above threshold (~50ms).
+             A noise spike is 1–2 frames; real speech is sustained. */
+          if (consecutiveAbove >= 3) {
+            if (!speechDetected) {
+              speechDetected = true;
+              clearTimeout(safetyTimer);
+              setPhase("recording");
+            }
+            speechFramesRef.current += 1;
+            lastSpeechAt = Date.now();
+          }
+        } else {
+          consecutiveAbove = 0;
+        }
+
+        /* End condition — timestamp comparison, no timers to clear. */
+        if (speechDetected && speechFramesRef.current >= 15 && lastSpeechAt) {
+          const elapsed = Date.now() - lastSpeechAt;
+          const grace = speechFramesRef.current < 60 ? 3500 : 2500;
+          if (elapsed > grace) {
+            recorderRef.current.stop();
+            recorderRef.current = null;
+            setPhase("transcribing");
+            return;
+          }
+        }
+
         rafRef.current = requestAnimationFrame(check);
       };
       rafRef.current = requestAnimationFrame(check);
@@ -277,40 +335,9 @@ export default function WhisperPage() {
 
     setInput(transcript);
 
-    /* Step 2: classify and route.
-       Screen questions win — grab a fresh screenshot then ask the brain.
-       Instructions (that aren't screen questions) go to the agent.
-       Everything else goes to the brain as conversation. */
-    if (isInstruction(transcript) && !isScreenQuestion(transcript)) {
-      setPhase("idle");
-      const priorUser = history.filter((h) => h.role === "user").pop();
-      const isConfirmation = transcript.trim().length < 30
-        && /\b(do it|do that|do what i|just do|go ahead|go for it|make it happen|let's go|run it|start it|proceed)\b/i.test(transcript);
-      const instruction = priorUser && isConfirmation
-        ? priorUser.content
-        : transcript;
-      setHistory([]);
-      await runTask(instruction);
-    } else {
-      setPhase("thinking");
-      if (isScreenQuestion(transcript)) await doppel.lookNow();
-      streamRef.current = "";
-      const result = await window.doppel?.askBrainFast(transcript, history);
-      const reply = result?.ok && result.text
-        ? result.text
-        : (result?.detail ?? "I don't have enough context to answer that yet.");
-      if (!streamRef.current) {
-        setAnswer(reply);
-        setPhase("answer");
-      }
-      setHistory((prev) => [
-        ...prev,
-        { role: "user", content: transcript },
-        { role: "assistant", content: reply },
-      ]);
-      scheduleDismiss();
-      if (conversational) setTimeout(() => startRecording(true), 1500);
-    }
+    /* Step 2: classify the whole message and route — handles mixed
+       messages that contain both questions and commands. */
+    await routeMessage(transcript);
   };
 
   /* --------------------------------------------------------- text handler */
@@ -326,64 +353,10 @@ export default function WhisperPage() {
       recorderRef.current = null;
     }
 
-    if (isInstruction(q) && !isScreenQuestion(q)) {
-      setPhase("idle");
-      const priorUser = history.filter((h) => h.role === "user").pop();
-      const isConfirmation = q.length < 30
-        && /\b(do it|do that|do what i|just do|go ahead|go for it|make it happen|let's go|run it|start it|proceed)\b/i.test(q);
-      const instruction = priorUser && isConfirmation
-        ? priorUser.content
-        : q;
-      setHistory([]);
-      await runTask(instruction);
-    } else {
-      setPhase("thinking");
-      if (isScreenQuestion(q)) await doppel.lookNow();
-      streamRef.current = "";
-      const result = await window.doppel?.askBrainFast(q, history);
-      const reply = result?.ok && result.text
-        ? result.text
-        : (result?.detail ?? "I don't have enough context to answer that yet.");
-      if (!streamRef.current) {
-        setAnswer(reply);
-        setPhase("answer");
-      }
-      setHistory((prev) => [
-        ...prev,
-        { role: "user", content: q },
-        { role: "assistant", content: reply },
-      ]);
-      scheduleDismiss();
-      if (conversational) setTimeout(() => startRecording(true), 1500);
-    }
+    await routeMessage(q);
   };
 
-  /* --------------------------------------------------------- agent runner */
-
-  const runTask = async (instruction: string, mode: "background" | "foreground" = "background") => {
-    if (mode === "foreground") {
-      setPhase("working");
-      setAnswer("");
-    }
-    const result = await doppel.runAgent({ instruction, mode });
-
-    if (!result?.ok) {
-      setAnswer(result?.detail ?? "I couldn't start.");
-      setPhase("answer");
-      scheduleDismiss();
-      return;
-    }
-
-    /* Background tasks: stay conversational — the task strip shows progress.
-       Foreground tasks: switch to "working" phase until done. */
-    if (mode === "background") {
-      setInput("");
-      setPhase("idle");
-      inputRef.current?.focus();
-    }
-  };
-
-  /* ------------------------------------------------------- instruction test */
+  /* ------------------------------------------------------- classification */
 
   /** Detect Whisper hallucinations — garbage output from silence/noise. */
   function isWhisperHallucination(text: string): boolean {
@@ -436,46 +409,241 @@ export default function WhisperPage() {
     ].some((re) => re.test(text));
   }
 
-  function isInstruction(text: string): boolean {
+  /* --------------------------------------------------------- walkthrough detection
+     FIRST gate — before any other classification.  If someone wants a
+     walkthrough / tutorial / to be pointed at a UI element, it ALWAYS
+     goes to the guide system.  Never to the agent, never to the brain.
+
+     Every conceivable way to ask is listed.  Spoken language is messy:
+     Whisper might capitalise oddly, add/drop punctuation, merge words,
+     or hallucinate filler.  All patterns are case-insensitive and
+     tolerant of extra whitespace. */
+
+  const WALKTHROUGH_PATTERNS: RegExp[] = [
+    /* ---- "walk me through" family ---- */
+    /\bwalk\s+(me\s+)?through\b/i,
+    /\bwalk\s+through\s+(how|the|this|that|it|my|your|setting|process|steps)\b/i,
+
+    /* ---- "guide me" family ---- */
+    /\bguide\s+(me\s+)?(through|on|to|in|for|with)\b/i,
+
+    /* ---- "take me through" ---- */
+    /\btake\s+me\s+through\b/i,
+
+    /* ---- "show me how" family ---- */
+    /\bshow\s+me\s+how\s+(to|i|we|you|it|the|this|that)\b/i,
+    /\bshow\s+me\s+how\b/i,
+
+    /* ---- "teach me" family ---- */
+    /\bteach\s+me\b/i,
+
+    /* ---- "demonstrate" ---- */
+    /\bdemonstrate\s+(how\s+to\s+|the\s+|this|that|it)?\b/i,
+
+    /* ---- tutorial / walkthrough / tour / demo as nouns ---- */
+    /\b(walkthrough|walk-through|tutorial|guided\s*tour)\s+(of|for|on|about|to)\b/i,
+    /\b(give|show|start|begin|do|run|provide|create)\s+(me\s+)?(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration)\b/i,
+    /\b(i\s+(want|need|would\s+like)\s+(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration))\b/i,
+
+    /* ---- "step by step" (spoken often as "step-by-step") ---- */
+    /\bstep[\s-]*by[\s-]*step\b/i,
+
+    /* ---- pointing / "where is" — Clicky style ---- */
+    /\bshow\s+me\s+where\b/i,
+    /\bpoint\s+(me\s+)?(to|at|where|toward|towards)\b/i,
+    /\bwhere\s+(do|should|can|would|could|shall)\s+i\s+(click|tap|press|find|go|look|navigate|select|start|begin)\b/i,
+    /\bwhere\s+(is|are|was)\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|tab|link|icon|toggle|switch|field|input|checkbox|dropdown|slider|control|panel|section|page|area|tool|toolbar|sidebar|dialog|popup|modal|window|pane)\b/i,
+    /\bwhich\s+(button|menu|tab|option|setting|icon|link|control)\s+(do|should|to|would|could)\b/i,
+    /\b(what|where)\s+(do|should|would|could)\s+i\s+(click|press|tap|select|choose|pick|hit)\b/i,
+    /\bhelp\s+me\s+find\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|control|toggle|icon|link|field|tab)\b/i,
+    /\bfind\s+(the\s+)?(button|setting|option|menu|control|toggle)\s+(for|to)\b/i,
+
+    /* ---- "help me learn / figure out how to" ---- */
+    /\bhelp\s+me\s+(learn|figure\s+out|understand)\s+how\s+to\b/i,
+
+    /* ---- "how do I" + UI action verb (screen-specific how-to) ---- */
+    /\bhow\s+(do|can|should|would)\s+i\s+(click|navigate|find|get to|access|open|enable|disable|toggle|turn on|turn off|activate|deactivate|set up|configure|change|modify|adjust|switch)\b/i,
+
+    /* ---- "show me the way" / "lead me" ---- */
+    /\bshow\s+me\s+the\s+way\s+to\b/i,
+    /\blead\s+me\s+(through|to)\b/i,
+
+    /* ---- "can you show me" + location/process words ---- */
+    /\b(show|point\s+out)\s+me\s+(the\s+)?(steps|process|procedure|way|path|workflow|flow)\b/i,
+
+    /* ---- Whisper mishearings — common transcription errors ---- */
+    /\bwok\s+me\s+through\b/i,     /* "walk" → "wok" */
+    /\bguard\s+me\s+through\b/i,   /* "guide" → "guard" */
+    /\bwalked?\s+me\s+through\b/i,  /* past tense still means the same */
+  ];
+
+  function isWalkthroughRequest(text: string): boolean {
+    return WALKTHROUGH_PATTERNS.some((re) => re.test(text));
+  }
+
+  /** Strip the trigger phrase, keep the goal — what the user actually wants. */
+  function extractWalkthroughGoal(text: string): string {
+    let goal = text
+      /* Remove wake words / politeness prefixes */
+      .replace(/^(hey\s+(doppel|dopple|double)|ok\s+doppel|doppel|yo\s+doppel)\s*,?\s*/i, "")
+      .replace(/^(can you|could you|would you|will you|please|i need you to|i want you to|i'd like you to)\s+/i, "")
+      /* Remove the walkthrough trigger itself */
+      .replace(/^(walk\s+me\s+through\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(guide\s+me\s+(through|on|to|in|for|with)\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(take\s+me\s+through\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(show\s+me\s+how\s+(to\s+|i\s+(can|should)\s+)?)/i, "")
+      .replace(/^(show\s+me\s+where\s+(to\s+|i\s+(can|should)\s+)?)/i, "")
+      .replace(/^(teach\s+me\s+(how\s+to\s+|to\s+)?)/i, "")
+      .replace(/^(demonstrate\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(point\s+me\s+(to|at)\s+)/i, "")
+      .replace(/^(help\s+me\s+(learn|figure\s+out|understand|find)\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(give\s+me\s+a\s+(walkthrough|tutorial|demo|demonstration)\s+(of|for|on|about)\s+)/i, "")
+      .replace(/^(show\s+me\s+(a\s+)?(walkthrough|tutorial|demo)\s+(of|for|on|about)\s+)/i, "")
+      .replace(/^(step[\s-]*by[\s-]*step\s+(how\s+to\s+)?)/i, "")
+      .replace(/^(where\s+(do|should|can)\s+i\s+(click|find|go|navigate)\s+(to\s+)?)/i, "")
+      .replace(/^(where\s+is\s+(the\s+)?)/i, "")
+      .replace(/^(how\s+(do|can|should)\s+i\s+)/i, "")
+      .replace(/[?.!]+$/, "")
+      .trim();
+    /* If extraction ate everything, fall back to the raw text. */
+    return goal.length >= 3 ? goal : text.trim();
+  }
+
+  /** Shared routing logic for both voice and text input. */
+  async function routeMessage(text: string) {
     const t = text.trim();
+    if (!t) return;
 
-    /* Questions starting with question words are questions, not instructions.
-       Exception: "Can you X?" / "Could you X?" are polite commands. */
-    if (t.endsWith("?")) {
-      if (/^(what|where|when|why|how|who|which|is|are|does|do|did|was|were|has|have)\b/i.test(t)
-        && !(/\b(can you|could you|would you|will you)\b/i.test(t))) {
-        return false;
+    /* ---- Walkthrough — ABSOLUTE FIRST check, before everything else.
+       If this matches, nothing else runs.  No ambiguity, no fallthrough. */
+    if (isWalkthroughRequest(t)) {
+      const goal = extractWalkthroughGoal(t);
+      setPhase("thinking");
+      streamRef.current = "";
+      thinkingRef.current = "";
+      setThinking("Setting up walkthrough...");
+      setThinkingExpanded(true);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await doppel.guideStartWalkthrough(goal) as any;
+        if (result?.ok) {
+          setAnswer(
+            `Got it. I'll walk you through it — ${result.steps ?? "a few"} steps.\n\n` +
+            `**Step 1:** ${result.firstStep ?? goal}\n\n` +
+            `Look at the pointer on your screen. Say "next" when you're ready for the next step.`,
+          );
+        } else {
+          setAnswer(`I couldn't set up that walkthrough. ${result?.detail ?? "Try again?"}`);
+        }
+      } catch {
+        setAnswer("Something went wrong starting the walkthrough.");
       }
+      setPhase("answer");
+      return;
     }
 
-    /* Short follow-up confirmations — only when < 40 chars AND history exists.
-       Must contain an explicit action word, not just "ok" / "yes" alone —
-       "yes do it" is a command, "yes I understand" is not. */
-    if (history.length > 0 && t.length < 40
-      && /\b(do it|do that|do what i|just do|go ahead|go for it|make it happen|let's go|run it|start it|proceed)\b/i.test(t)) {
-      return true;
+    /* ---- Walkthrough navigation — "next" / "back" / "stop" / "do it for me"
+       while a walkthrough is already active. */
+    if (wtRef.current?.active) {
+      const tl = t.toLowerCase();
+      if (/\b(next|continue|go on|move on|okay|ok|done|got it|i did it|finished|ready)\b/i.test(tl) && t.length < 40) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await doppel.guideNextStep() as any;
+        if (r?.done) {
+          setAnswer("Walkthrough complete!");
+          setPhase("answer");
+        } else if (r?.ok) {
+          setAnswer(`**Step ${r.step}:** ${r.instruction}`);
+          setPhase("answer");
+        }
+        return;
+      }
+      if (/\b(back|previous|go back|prev|undo|before)\b/i.test(tl) && t.length < 30) {
+        const r = await doppel.guidePrevStep();
+        if (r?.ok) {
+          setAnswer(`Back to step ${r.step}.`);
+          setPhase("answer");
+        }
+        return;
+      }
+      if (/\b(stop|end|cancel|quit|exit|close|enough|never\s*mind|nevermind|i'm done|done)\b/i.test(tl) && t.length < 30) {
+        await doppel.guideEndWalkthrough();
+        setAnswer("Walkthrough ended.");
+        setPhase("answer");
+        return;
+      }
+      if (/\b(do it|do it for me|just do it|do that for me|automate|automatic|you do it)\b/i.test(tl) && t.length < 40) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = await doppel.guideDoStep() as any;
+        if (r?.ok) {
+          setAnswer(`Doing it — ${r.action ?? "performing"} the action.`);
+          setPhase("answer");
+          /* Auto-advance after doing */
+          setTimeout(async () => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const nr = await doppel.guideNextStep() as any;
+            if (nr?.done) {
+              setAnswer("Walkthrough complete!");
+              setPhase("answer");
+            } else if (nr?.ok) {
+              setAnswer(`**Step ${nr.step}:** ${nr.instruction}`);
+              setPhase("answer");
+            }
+          }, 1500);
+        } else {
+          setAnswer(`Couldn't do that step automatically.`);
+          setPhase("answer");
+        }
+        return;
+      }
+      /* Not a nav command — fall through to normal routing (user might ask
+         an unrelated question mid-walkthrough). */
     }
 
-    const ACTION_VERBS = `(open|create|make|build|run|start|stop|move|copy|delete|install|download|send|write|edit|fix|update|close|launch|save|upload|convert|merge|add|remove|change|rename|find|get|search|show|take|put|turn|switch|toggle|enable|disable|clean|clear|organize|sort|schedule|order|post|share|deploy|test|format|print|zip|translate|summarize|draft|generate|fetch|pull|push|check|help|set|browse|surf|research|investigate|analyze|compare|review|go|navigate|click|select|type|enter|press|scroll|refresh|restart|cancel|undo|redo|play|pause|mute|unmute|minimize|maximize|resize|connect|disconnect|export|import|submit|commit|email|message|remind|bookmark|pin|unpin|archive|arrange|crop|backup|restore|log|sign)`;
+    /* ---- Inbox — "send to agent" / "task:" / "tell claude to" ------------ */
+    const AGENT_NAMES: Record<string, string> = {
+      claude: "claude-desktop", cursor: "cursor", chatgpt: "chatgpt",
+      gpt: "chatgpt", windsurf: "windsurf", grok: "grok",
+    };
+    /* "tell claude to X", "ask cursor to X", "send to chatgpt: X" */
+    const targetMatch = t.match(/^(?:tell|ask|send\s+to)\s+(claude|cursor|chatgpt|gpt|windsurf|grok)\s+(?:to\s+)?[:\s]*(.+)/i);
+    /* generic: "task: X", "send to agent: X", "queue: X" */
+    const genericMatch = !targetMatch && t.match(/^(?:send\s+to\s+agent|task|tell\s+(?:the\s+)?agent\s+to|queue|assign)[:\s]+(.+)/i);
 
-    /* Polite commands — "can you" / "could you" must be followed by an action verb. */
-    if (new RegExp(`\\b(can you|could you|would you|will you)\\s+${ACTION_VERBS}\\b`, "i").test(t)) return true;
+    if (targetMatch || genericMatch) {
+      const target = targetMatch ? (AGENT_NAMES[targetMatch[1].toLowerCase()] ?? "any") : "any";
+      const instruction = (targetMatch ? targetMatch[2] : (genericMatch as RegExpMatchArray)[1]).trim();
+      const label = targetMatch ? targetMatch[1] : "your agent";
+      await doppel.inboxCreate(instruction, true, target);
+      setAnswer(`Queued for ${label}:\n\n"${instruction}"\n\nIt'll be picked up next time the agent checks in.`);
+      setPhase("answer");
+      scheduleDismiss();
+      return;
+    }
 
-    /* "I need you to..." / "I want you to..." followed by a verb. */
-    if (new RegExp(`\\b(i need you to|i want you to|i'd like you to)\\s+${ACTION_VERBS}\\b`, "i").test(t)) return true;
+    /* Everything goes to the brain — answer from memory, screen, or web. */
+    setPhase("thinking");
+    if (isScreenQuestion(t)) await doppel.lookNow();
+    streamRef.current = "";
+    thinkingRef.current = "";
+    setThinking("");
+    setThinkingExpanded(true);
+    const result = await window.doppel?.askBrainFast(t, history);
+    const reply = result?.ok && result.text
+      ? result.text
+      : (result?.detail ?? "I don't have enough context to answer that yet.");
+    if (!streamRef.current) {
+      setAnswer(reply);
+      setPhase("answer");
+    }
+    setHistory((prev) => [
+      ...prev,
+      { role: "user", content: t },
+      { role: "assistant", content: reply },
+    ]);
+    scheduleDismiss();
 
-    /* "please [verb]" — strong signal. */
-    if (new RegExp(`\\bplease\\s+${ACTION_VERBS}\\b`, "i").test(t)) return true;
-
-    /* Imperative at the start: "Search for...", "Find me...", "Open the...",
-       "Go to...", "Click on...", "Scroll down..." */
-    if (new RegExp(`^${ACTION_VERBS}\\s+(me|for|up|down|at|to|on|in|into|out|over|through|about|with|from|the|my|a|an|this|that|it|all)\\b`, "i").test(t)) return true;
-
-    /* Bare imperative — single verb or verb + "it"/"this"/"that" at the end.
-       "Stop." / "Cancel." / "Continue." / "Undo that." */
-    if (new RegExp(`^${ACTION_VERBS}(\\s+(it|this|that|everything|all))?[.!]?$`, "i").test(t)) return true;
-
-    return false;
+    if (conversational) setTimeout(() => startRecording(true), 1500);
   }
 
   /* -------------------------------------------------------------- nudges */
@@ -483,10 +651,7 @@ export default function WhisperPage() {
   const actNudge = async (n: Nudge) => {
     const result = await doppel.actOnNudge(n.id);
     if (!result?.ok) return;
-    if (n.kind === "offer") {
-      /* offer nudges trigger the agent — switch to working phase */
-      setPhase("working");
-    } else if (n.detail) {
+    if (n.detail) {
       setAnswer(n.detail);
       setPhase("answer");
     }
@@ -513,8 +678,10 @@ export default function WhisperPage() {
     }
     recorderRef.current = null;
     streamRef.current = "";
+    thinkingRef.current = "";
     setInput("");
     setAnswer("");
+    setThinking("");
     setPhase("idle");
     if (conversational) {
       setTimeout(() => startRecording(), 300);
@@ -532,7 +699,7 @@ export default function WhisperPage() {
   };
 
   const busy =
-    phase === "transcribing" || phase === "thinking" || phase === "recording" || phase === "working";
+    phase === "transcribing" || phase === "thinking" || phase === "recording";
 
   /* Shared easing — Apple-style spring feel. */
   const ease = [0.22, 0.68, 0, 1.0] as const;
@@ -546,10 +713,9 @@ export default function WhisperPage() {
       style={{ background: "transparent", WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <motion.div
-        layout
         initial={{ opacity: 0, y: -8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ ...slow, layout: medium }}
+        transition={slow}
         className="mt-1 flex w-full flex-col gap-3"
         style={{
           background: "rgba(240, 243, 248, 0.92)",
@@ -576,7 +742,7 @@ export default function WhisperPage() {
                     startRecording();
                   }
                 }}
-                disabled={phase === "thinking" || phase === "transcribing" || phase === "working"}
+                disabled={phase === "thinking" || phase === "transcribing"}
                 className="grid shrink-0 cursor-pointer place-items-center rounded-full"
                 animate={{
                   background: phase === "recording" ? "var(--primary)" : "var(--bg-base)",
@@ -663,7 +829,7 @@ export default function WhisperPage() {
 
           {/* Emergency stop */}
           <AnimatePresence>
-            {(busy || agentBusy) && (
+            {busy && (
               <motion.button
                 initial={{ opacity: 0, scale: 0.5, width: 0 }}
                 animate={{ opacity: 1, scale: 1, width: 38 }}
@@ -671,7 +837,6 @@ export default function WhisperPage() {
                 transition={medium}
                 onClick={() => {
                   setConversational(false);
-                  if (agentBusy) doppel.abortAgent();
                   if (recorderRef.current?.state === "recording") recorderRef.current.stop();
                   recorderRef.current = null;
                   setInput("");
@@ -783,6 +948,51 @@ export default function WhisperPage() {
           )}
         </AnimatePresence>
 
+        {/* Active inbox tasks */}
+        <AnimatePresence>
+          {phase === "idle" && inbox.filter((t) => t.status === "claimed" || t.status === "done").slice(0, 2).map((task) => (
+            <motion.div
+              key={task.id}
+              initial={{ opacity: 0, y: -6, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: "auto" }}
+              exit={{ opacity: 0, y: -6, height: 0 }}
+              transition={medium}
+              className="overflow-hidden"
+              style={{
+                padding: "10px 14px",
+                borderRadius: "var(--radius-control)",
+                background: "rgba(255, 255, 255, 0.5)",
+                borderLeft: `3px solid ${task.status === "done" ? "#3a3" : "#e89b00"}`,
+              }}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p style={{ fontSize: "var(--text-xs, 11px)", color: task.status === "done" ? "#3a3" : "#e89b00", fontWeight: 600 }}>
+                    {task.status === "claimed" ? `${task.agent ?? "Agent"} working...` : "Done"}
+                  </p>
+                  <p style={{ fontSize: "var(--text-sm)", color: "var(--ink)", marginTop: 2 }}>
+                    {task.instruction.length > 60 ? task.instruction.slice(0, 60) + "\u2026" : task.instruction}
+                  </p>
+                  {task.result && (
+                    <p style={{ fontSize: "var(--text-xs)", color: "var(--slate)", marginTop: 4, whiteSpace: "pre-wrap" }}>
+                      {task.result.length > 200 ? task.result.slice(0, 200) + "\u2026" : task.result}
+                    </p>
+                  )}
+                </div>
+                {task.status === "done" && (
+                  <button
+                    onClick={() => doppel.inboxClear()}
+                    className="cursor-pointer shrink-0"
+                    style={{ fontSize: "var(--text-xs)", color: "var(--slate)" }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+
         {/* Status / answer */}
         <AnimatePresence mode="wait">
           {phase === "recording" && (
@@ -798,46 +1008,44 @@ export default function WhisperPage() {
           )}
 
           {phase === "thinking" && (
-            <StatusLine key="thinking" pulse transition={fast}>
-              {voice.whisper.thinking}...
-            </StatusLine>
+            <motion.div
+              key="thinking"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={fast}
+              style={{
+                padding: "10px 14px",
+                borderRadius: "var(--radius-control)",
+                background: "rgba(99, 102, 241, 0.04)",
+                borderLeft: "3px solid rgba(99, 102, 241, 0.3)",
+              }}
+            >
+              <div className="flex items-center gap-2" style={{ marginBottom: thinking ? 6 : 0 }}>
+                <Dot />
+                <span className="micro-label" style={{ color: "var(--primary)", opacity: 0.7 }}>
+                  thinking
+                </span>
+              </div>
+              {thinking && (
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.7 }}
+                  transition={fast}
+                  style={{
+                    fontSize: "var(--text-sm)",
+                    color: "var(--slate)",
+                    lineHeight: 1.5,
+                    maxHeight: 160,
+                    overflowY: "auto",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {thinking}
+                </motion.p>
+              )}
+            </motion.div>
           )}
-
-          {/* Foreground working */}
-          {phase === "working" && (() => {
-            const fg = agents.find((t) => t.mode === "foreground" && !t.summary);
-            return fg ? (
-              <motion.div
-                key="working"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={medium}
-              >
-                <div className="flex items-center gap-2">
-                  <Dot />
-                  <span className="micro-label">
-                    screen &middot; {voice.agent.running(fg.step)}
-                  </span>
-                </div>
-                <AnimatePresence mode="wait">
-                  {fg.narration.length > 0 && (
-                    <motion.p
-                      key={fg.narration[fg.narration.length - 1].at}
-                      initial={{ opacity: 0, x: 4 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0 }}
-                      transition={fast}
-                      className="agent-voice mt-2"
-                      style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-                    >
-                      {fg.narration[fg.narration.length - 1].text}
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            ) : null;
-          })()}
 
           {phase === "answer" && (
             <motion.div
@@ -847,6 +1055,47 @@ export default function WhisperPage() {
               exit={{ opacity: 0, y: -4 }}
               transition={medium}
             >
+              {thinking && (
+                <div
+                  onClick={() => setThinkingExpanded(!thinkingExpanded)}
+                  style={{
+                    marginBottom: 10,
+                    padding: "8px 12px",
+                    borderRadius: "var(--radius-control)",
+                    background: "rgba(99, 102, 241, 0.04)",
+                    borderLeft: "3px solid rgba(99, 102, 241, 0.2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <span
+                    className="micro-label"
+                    style={{ color: "var(--primary)", opacity: 0.6 }}
+                  >
+                    {thinkingExpanded ? "\u25BC" : "\u25B6"} thinking
+                  </span>
+                  <AnimatePresence>
+                    {thinkingExpanded && (
+                      <motion.p
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 0.6, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={fast}
+                        style={{
+                          fontSize: "var(--text-sm)",
+                          color: "var(--slate)",
+                          marginTop: 6,
+                          lineHeight: 1.5,
+                          maxHeight: 140,
+                          overflowY: "auto",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {thinking}
+                      </motion.p>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
               <RichText>{answer}</RichText>
               <motion.div
                 initial={{ opacity: 0 }}
@@ -873,124 +1122,6 @@ export default function WhisperPage() {
           )}
         </AnimatePresence>
 
-        {/* Task strip — active + recently completed tasks */}
-        <AnimatePresence>
-          {visibleAgents.map((t) => (
-            <motion.div
-              key={t.id}
-              layout
-              initial={{ opacity: 0, y: 6, height: 0 }}
-              animate={{
-                opacity: t.summary ? 0.7 : 1,
-                y: 0,
-                height: "auto",
-              }}
-              exit={{ opacity: 0, height: 0, y: -4 }}
-              transition={medium}
-              className="overflow-hidden"
-              style={{
-                padding: "8px 12px",
-                borderRadius: "var(--radius-control)",
-                background: t.summary
-                  ? "rgba(255, 255, 255, 0.2)"
-                  : t.status === "parked"
-                    ? "rgba(var(--primary-rgb, 99,102,241), 0.08)"
-                    : "rgba(255, 255, 255, 0.35)",
-                borderLeft: t.status === "parked"
-                  ? "3px solid var(--primary)"
-                  : t.summary
-                    ? "3px solid rgba(var(--primary-rgb, 99,102,241), 0.3)"
-                    : "3px solid transparent",
-              }}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    {!t.summary && t.status === "running" && <Dot />}
-                    <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--ink)" }}>
-                      {t.summary
-                        ? (t.summary.outcome === "done" ? "Done" : "Stopped")
-                        : t.title.length > 40 ? t.title.slice(0, 40) + "\u2026" : t.title}
-                    </p>
-                  </div>
-                  <AnimatePresence mode="wait">
-                    {!t.summary && (
-                      <motion.p
-                        key={`progress-${t.step}`}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={fast}
-                        className="micro-label"
-                        style={{ marginTop: 1 }}
-                      >
-                        {t.mode} &middot; step {t.step}
-                        {t.narration.length > 0 && ` \u2014 ${t.narration[t.narration.length - 1].text.slice(0, 50)}`}
-                      </motion.p>
-                    )}
-                    {t.summary && (
-                      <motion.p
-                        key="summary"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={fast}
-                        className="micro-label"
-                        style={{ marginTop: 1 }}
-                      >
-                        {t.summary.text.length > 60 ? t.summary.text.slice(0, 60) + "\u2026" : t.summary.text}
-                      </motion.p>
-                    )}
-                  </AnimatePresence>
-                </div>
-
-                {/* Parked — needs approval */}
-                <AnimatePresence>
-                  {t.status === "parked" && t.parked && (
-                    <motion.div
-                      initial={{ opacity: 0, x: 8 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 8 }}
-                      transition={fast}
-                      className="flex shrink-0 gap-2"
-                    >
-                      <button
-                        onClick={() => doppel.answerAgent(t.id, "approve")}
-                        className="cursor-pointer"
-                        style={{ fontSize: "var(--text-xs, 11px)", color: "var(--primary)" }}
-                      >
-                        {voice.agent.approve}
-                      </button>
-                      <button
-                        onClick={() => doppel.answerAgent(t.id, "stop")}
-                        className="cursor-pointer"
-                        style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}
-                      >
-                        Stop
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Running — abort button */}
-                <AnimatePresence>
-                  {t.status === "running" && (
-                    <motion.button
-                      initial={{ opacity: 0, scale: 0.5 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.5 }}
-                      transition={fast}
-                      onClick={() => doppel.abortAgent(t.id)}
-                      className="cursor-pointer shrink-0"
-                      style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}
-                    >
-                      &times;
-                    </motion.button>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
       </motion.div>
     </div>
   );

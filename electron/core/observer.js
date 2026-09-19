@@ -30,6 +30,10 @@ const IGNORED = [
   /\.(tmp|crdownload|part|partial|swp)$/i,
   /(^|[\\/])desktop\.ini$/i,
   /(^|[\\/])thumbs\.db$/i,
+  /(^|[\\/])\.DS_Store$/,
+  /(^|[\\/])\._/,
+  /(^|[\\/])\.Spotlight-V100([\\/]|$)/,
+  /(^|[\\/])\.Trashes([\\/]|$)/,
 ];
 
 let watchers = [];

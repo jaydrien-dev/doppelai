@@ -39,7 +39,9 @@ html {
 html.overlay,
 html.overlay body,
 html.whisper,
-html.whisper body {
+html.whisper body,
+html.guide,
+html.guide body {
   background: transparent !important;
   overflow: hidden;
 }

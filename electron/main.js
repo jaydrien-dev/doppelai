@@ -78,6 +78,7 @@ function baseUrl() {
 let deskWindow = null;
 let overlayWindow = null;
 let whisperWindow = null;
+let guideWindow = null;
 let trayIcon = null;
 let quitting = false;
 
@@ -182,6 +183,58 @@ function createOverlayWindow() {
 
   overlayWindow.loadURL(`${baseUrl()}/overlay/`);
   return overlayWindow;
+}
+
+/* --------------------------------------------------------- guide overlay
+   Fullscreen, transparent, click-through window for the Clicky-style
+   pointer that highlights UI elements during walkthroughs. */
+
+function createGuideWindow() {
+  if (guideWindow && !guideWindow.isDestroyed()) return guideWindow;
+
+  const primary = screen.getPrimaryDisplay();
+  const { x, y, width, height } = primary.bounds;
+
+  guideWindow = new BrowserWindow({
+    x, y, width, height,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    focusable: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  guideWindow.setAlwaysOnTop(true, "screen-saver");
+  guideWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  guideWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  guideWindow.once("ready-to-show", () => guideWindow.showInactive());
+  guideWindow.on("closed", () => { guideWindow = null; });
+
+  guideWindow.loadURL(`${baseUrl()}/guide/`);
+  return guideWindow;
+}
+
+function showGuideWindow() {
+  if (!guideWindow || guideWindow.isDestroyed()) createGuideWindow();
+  else guideWindow.showInactive();
+}
+
+function hideGuideWindow() {
+  if (guideWindow && !guideWindow.isDestroyed()) guideWindow.hide();
 }
 
 function onSomeDisplay({ x, y }) {
@@ -354,6 +407,11 @@ function createTray() {
     image = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL);
   }
 
+  /* macOS menu bar icons must be Template images to adapt to light/dark mode. */
+  if (process.platform === "darwin") {
+    image.setTemplateImage(true);
+  }
+
   trayIcon = new Tray(image);
   trayIcon.setToolTip("Doppel");
 
@@ -432,7 +490,7 @@ app.whenReady().then(() => {
 
   // Doppel's memory comes up before its face does.
   db.init();
-  ipc.register();
+  ipc.register({ showGuideWindow, hideGuideWindow });
 
   /* On startup: the overlay is always visible, plus tray icon and whisper.
      The main window opens from the tray or overlay's right-click menu. */
@@ -657,6 +715,13 @@ ipcMain.handle("whisper:home", () => {
 ipcMain.handle("whisper:setAutoDismiss", (_event, sec) => {
   db.update((s) => {
     s.whisper.autoDismiss = Math.max(0, Number(sec) || 0);
+  });
+  return true;
+});
+
+ipcMain.handle("whisper:setMicSensitivity", (_event, level) => {
+  db.update((s) => {
+    s.whisper.micSensitivity = Math.max(10, Math.min(200, Number(level) || 80));
   });
   return true;
 });

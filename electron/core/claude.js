@@ -227,7 +227,9 @@ async function streamAsk({
   messages,
   maxTokens = 1200,
   fast = true,
+  thinking = false,
   onText,
+  onThinking,
 }) {
   const api = anthropic();
   if (!api) return { ok: false, reason: "no-key" };
@@ -242,8 +244,15 @@ async function streamAsk({
     messages,
   };
 
+  if (thinking) {
+    request.thinking = { type: "enabled", budget_tokens: 1024 };
+    /* max_tokens must exceed budget_tokens */
+    if (request.max_tokens <= 1024) request.max_tokens = 2048;
+  }
+
   try {
     const stream = api.messages.stream(request);
+    if (onThinking) stream.on("thinking", (delta) => onThinking(delta));
     if (onText) stream.on("text", (delta) => onText(delta));
     const response = await stream.finalMessage();
     trackUsage(response?.usage);

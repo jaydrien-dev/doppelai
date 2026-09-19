@@ -25,11 +25,6 @@ contextBridge.exposeInMainWorld("doppel", {
     ipcRenderer.on("doppel:state", handler);
     return () => ipcRenderer.removeListener("doppel:state", handler);
   },
-  onAgent: (fn) => {
-    const handler = (_e, task) => fn(task);
-    ipcRenderer.on("doppel:agent", handler);
-    return () => ipcRenderer.removeListener("doppel:agent", handler);
-  },
   onNarration: (fn) => {
     const handler = (_e, line) => fn(line);
     ipcRenderer.on("doppel:narration", handler);
@@ -44,6 +39,11 @@ contextBridge.exposeInMainWorld("doppel", {
     const handler = (_e, delta) => fn(delta);
     ipcRenderer.on("doppel:answer-stream", handler);
     return () => ipcRenderer.removeListener("doppel:answer-stream", handler);
+  },
+  onThinkingStream: (fn) => {
+    const handler = (_e, delta) => fn(delta);
+    ipcRenderer.on("doppel:thinking-stream", handler);
+    return () => ipcRenderer.removeListener("doppel:thinking-stream", handler);
   },
 
   /* the mind */
@@ -77,29 +77,6 @@ contextBridge.exposeInMainWorld("doppel", {
   ingestDocument: (filePath) => invoke("brain:ingest", filePath),
   ingestSupported: () => invoke("brain:ingestSupported"),
 
-  /* routines */
-  listRoutines: () => invoke("routines:list"),
-  routineProposals: () => invoke("routines:proposals"),
-  acceptRoutine: (patternId) => invoke("routines:accept", patternId),
-  rejectRoutine: (patternId) => invoke("routines:reject", patternId),
-  removeRoutine: (routineId) => invoke("routines:remove", routineId),
-  toggleRoutine: (routineId) => invoke("routines:toggle", routineId),
-  runRoutineNow: (routineId) => invoke("routines:runNow", routineId),
-
-  /* workflow recording */
-  recorderStart: (title) => invoke("recorder:start", title),
-  recorderStop: () => invoke("recorder:stop"),
-  recorderActive: () => invoke("recorder:active"),
-  recorderAbort: () => invoke("recorder:abort"),
-  recorderSave: (procedure) => invoke("recorder:save", procedure),
-
-  /* the agent */
-  getAgent: () => invoke("agent:get"),
-  agentHistory: (limit) => invoke("agent:history", limit),
-  runAgent: (input) => invoke("agent:run", input),
-  answerAgent: (id, choice) => invoke("agent:answer", id, choice),
-  abortAgent: (id) => invoke("agent:abort", id),
-
   /* observation */
   setPaused: (paused) => invoke("obs:pause", paused),
   setPermissions: (patch) => invoke("obs:permissions", patch),
@@ -127,6 +104,7 @@ contextBridge.exposeInMainWorld("doppel", {
   whisperHome: () => invoke("whisper:home"),
   whisperSetAutoDismiss: (sec) => invoke("whisper:setAutoDismiss", sec),
   whisperHide: () => invoke("whisper:hide"),
+  whisperSetMicSensitivity: (level) => invoke("whisper:setMicSensitivity", level),
 
   /* add-ons */
   listAddons: () => invoke("addons:list"),
@@ -143,6 +121,14 @@ contextBridge.exposeInMainWorld("doppel", {
   dismissNudge: (id) => invoke("nudge:dismiss", id),
   actOnNudge: (id) => invoke("nudge:act", id),
   nudgeSetEnabled: (on) => invoke("nudge:setEnabled", on),
+
+  /* inbox — task queue for external agents */
+  inboxList: () => invoke("inbox:list"),
+  inboxCreate: (instruction, autoApprove, target) => invoke("inbox:create", instruction, autoApprove, target),
+  inboxApprove: (id) => invoke("inbox:approve", id),
+  inboxReject: (id) => invoke("inbox:reject", id),
+  inboxRetry: (id) => invoke("inbox:retry", id),
+  inboxClear: () => invoke("inbox:clear"),
 
   /* security / biometric */
   securityAvailable: () => invoke("security:available"),
@@ -161,8 +147,7 @@ contextBridge.exposeInMainWorld("doppel", {
   resumeLast: () => invoke("app:resumeLast"),
 
   /* MCP integration */
-  mcpConnectClaude: () => invoke("mcp:connectClaude"),
-  mcpCheckClaude: () => invoke("mcp:checkClaude"),
+  mcpSnippet: () => invoke("mcp:snippet"),
 
   /* memory + misc */
   forgetEntity: (id) => invoke("memory:forget", id),
@@ -170,6 +155,37 @@ contextBridge.exposeInMainWorld("doppel", {
   reset: () => invoke("app:reset"),
   appPaths: () => invoke("app:paths"),
   revealPath: (target) => invoke("app:revealPath", target),
+
+  /* guide — Clicky-style walkthroughs */
+  guideFindElement: (desc) => invoke("guide:findElement", desc),
+  guidePointAt: (x, y, instruction) => invoke("guide:pointAt", x, y, instruction),
+  guideClearPointer: () => invoke("guide:clearPointer"),
+  guideStartWalkthrough: (goal) => invoke("guide:startWalkthrough", goal),
+  guideNextStep: () => invoke("guide:nextStep"),
+  guidePrevStep: () => invoke("guide:prevStep"),
+  guideEndWalkthrough: () => invoke("guide:endWalkthrough"),
+  guideDoStep: () => invoke("guide:doStep"),
+  guideGetState: () => invoke("guide:getState"),
+  onGuidePoint: (fn) => {
+    const handler = (_e, data) => fn(data);
+    ipcRenderer.on("guide:point", handler);
+    return () => ipcRenderer.removeListener("guide:point", handler);
+  },
+  onGuideClear: (fn) => {
+    const handler = (_e, data) => fn(data);
+    ipcRenderer.on("guide:clear", handler);
+    return () => ipcRenderer.removeListener("guide:clear", handler);
+  },
+  onGuideWalkthrough: (fn) => {
+    const handler = (_e, data) => fn(data);
+    ipcRenderer.on("guide:walkthrough", handler);
+    return () => ipcRenderer.removeListener("guide:walkthrough", handler);
+  },
+  onGuideInstruction: (fn) => {
+    const handler = (_e, data) => fn(data);
+    ipcRenderer.on("guide:instruction", handler);
+    return () => ipcRenderer.removeListener("guide:instruction", handler);
+  },
 
   /* billing */
   billingStatus: () => invoke("billing:status"),
@@ -179,6 +195,8 @@ contextBridge.exposeInMainWorld("doppel", {
   billingTokenPacks: () => invoke("billing:tokenPacks"),
   billingSetPlan: (plan) => invoke("billing:setPlan", plan),
   billingAddTokens: (amount) => invoke("billing:addTokens", amount),
+  billingCheckout: (priceId) => invoke("billing:checkout", priceId),
+  billingVerifyPurchase: (sessionId) => invoke("billing:verifyPurchase", sessionId),
 
   /* updates */
   getUpdateStatus: () => invoke("update:status"),

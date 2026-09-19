@@ -1,6 +1,16 @@
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
+const fs = require("node:fs");
+
+/* Load .env from the server directory if present. */
+const envFile = path.join(__dirname, ".env");
+if (fs.existsSync(envFile)) {
+  for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
+    const match = line.match(/^\s*([\w]+)\s*=\s*(.+)\s*$/);
+    if (match && !process.env[match[1]]) process.env[match[1]] = match[2];
+  }
+}
 
 const store = require("./store");
 
@@ -210,6 +220,90 @@ const routes = {
     const gone = store.deleteAccount(found.account.id);
     return json(res, 200, { deleted: gone });
   },
+};
+
+/* --------------------------------------------------------------- billing */
+
+const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY ?? "";
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
+
+const PRO_PRICE_ID = "price_1UFwALGPQDGH6ygYesHAfUCL";
+
+const PACK_PRICES = {
+  "price_1UFw8UGPQDGH6ygY5meqjAWI": 100,
+  "price_1UFw8jGPQDGH6ygYdATY7wPt": 500,
+  "price_1UFw95GPQDGH6ygY9KYQvKa7": 2000,
+  "price_1UFw9sGPQDGH6ygYyP3C7abz": 5000,
+};
+
+let stripe = null;
+function getStripe() {
+  if (!stripe && STRIPE_SECRET) {
+    stripe = require("stripe")(STRIPE_SECRET);
+  }
+  return stripe;
+}
+
+/**
+ * Create a Stripe Checkout session for a plan upgrade or token purchase.
+ */
+routes["POST /v1/billing/checkout"] = async (req, res) => {
+  const found = requireAuth(req, res);
+  if (!found) return undefined;
+  const s = getStripe();
+  if (!s) return json(res, 503, { error: "stripe_not_configured" });
+
+  const { priceId } = await readBody(req);
+  if (!priceId) return json(res, 400, { error: "missing_price_id" });
+
+  const isPro = priceId === PRO_PRICE_ID;
+  const isTokenPack = priceId in PACK_PRICES;
+  if (!isPro && !isTokenPack) return json(res, 400, { error: "unknown_price" });
+
+  const session = await s.checkout.sessions.create({
+    mode: isPro ? "subscription" : "payment",
+    line_items: [{ price: priceId, quantity: 1 }],
+    client_reference_id: found.account.id,
+    customer_email: found.account.email,
+    metadata: {
+      accountId: found.account.id,
+      type: isPro ? "pro" : "tokens",
+      tokens: isTokenPack ? String(PACK_PRICES[priceId]) : "0",
+    },
+    success_url: "https://doppel.ai/payment-success?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url: "https://doppel.ai/payment-cancelled",
+  });
+
+  return json(res, 200, { ok: true, url: session.url, sessionId: session.id });
+};
+
+/**
+ * Verify a completed Checkout session and return what was purchased.
+ */
+routes["POST /v1/billing/verify"] = async (req, res) => {
+  const found = requireAuth(req, res);
+  if (!found) return undefined;
+  const s = getStripe();
+  if (!s) return json(res, 503, { error: "stripe_not_configured" });
+
+  const { sessionId } = await readBody(req);
+  if (!sessionId) return json(res, 400, { error: "missing_session_id" });
+
+  const session = await s.checkout.sessions.retrieve(sessionId);
+  if (session.payment_status !== "paid") {
+    return json(res, 400, { error: "not_paid", status: session.payment_status });
+  }
+  if (session.client_reference_id !== found.account.id) {
+    return json(res, 403, { error: "wrong_account" });
+  }
+
+  const meta = session.metadata ?? {};
+  return json(res, 200, {
+    ok: true,
+    type: meta.type,
+    tokens: Number(meta.tokens) || 0,
+    priceId: session.line_items?.data?.[0]?.price?.id ?? null,
+  });
 };
 
 /** Revoking a device is `POST /v1/devices/:id/revoke`, so it needs a pattern. */

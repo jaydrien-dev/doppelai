@@ -197,6 +197,16 @@ function stopHeartbeat() {
   beat = null;
 }
 
+/* -------------------------------------------------------------- billing */
+
+async function createCheckout(priceId) {
+  return call("/v1/billing/checkout", { method: "POST", body: { priceId } });
+}
+
+async function verifyCheckout(sessionId) {
+  return call("/v1/billing/verify", { method: "POST", body: { sessionId } });
+}
+
 module.exports = {
   requestLink,
   verifyLink,
@@ -212,5 +222,7 @@ module.exports = {
   renameDevice,
   startHeartbeat,
   stopHeartbeat,
+  createCheckout,
+  verifyCheckout,
   DEFAULT_SERVER,
 };

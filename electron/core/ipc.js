@@ -5,21 +5,20 @@ const path = require("node:path");
 const db = require("./db");
 const vault = require("./vault");
 const observer = require("./observer");
-const actions = require("./actions");
 const win32 = require("./win32");
 const claude = require("./claude");
 const brain = require("./brain");
+const vectors = require("./vectors");
 const vision = require("./vision");
-const agent = require("./agent");
 const nudge = require("./nudge");
-const routines = require("./routines");
 const account = require("./account");
 const addons = require("./addons");
 const biometric = require("./biometric");
-const recorder = require("./recorder");
 const screen = require("./screen");
+const browser = require("./browser");
 const ingest = require("./ingest");
 const tokens = require("./tokens");
+const guide = require("./guide");
 
 /**
  * Everything the interface can ask for. The renderer holds no truth of its
@@ -32,8 +31,14 @@ function broadcast(channel, payload) {
   }
 }
 
-const pushState = () => broadcast("doppel:state", db.publicState());
-const pushAgent = (task) => broadcast("doppel:agent", task);
+let _pushTimer = null;
+const pushState = () => {
+  if (_pushTimer) return;
+  _pushTimer = setTimeout(() => {
+    _pushTimer = null;
+    broadcast("doppel:state", db.publicState());
+  }, 50);
+};
 const pushNarration = (line) => broadcast("doppel:narration", line);
 const pushNudge = (nudges) => broadcast("doppel:nudge", nudges);
 
@@ -88,15 +93,19 @@ function startConsolidation() {
 
 /* --------------------------------------------------------------------- wire */
 
-function register() {
-  agent.setPublisher((taskList) => pushAgent(taskList));
-  agent.setOnComplete(() => pushState());
-
+function register(opts = {}) {
   brain.init();
+  /* Preload the embedding model during boot so the first question doesn't
+     eat a 20-second cold start.  Fire-and-forget — if it fails the brain
+     already falls back to lexical search. */
+  vectors.ready().catch(() => {});
   addons.init();
   nudge.init(pushNudge);
+  guide.init(broadcast, {
+    onShow: opts.showGuideWindow ?? null,
+    onHide: opts.hideGuideWindow ?? null,
+  });
   biometric.init();
-  routines.startScheduler();
 
   /* -------------------------------------------------------------------
      Startup catch-up: find files that changed while Doppel was closed and
@@ -430,39 +439,15 @@ function register() {
       const transcript = (data.text ?? "").trim();
       if (!transcript) return { ok: false, phase: "transcribe", detail: "No speech detected." };
 
-      /* Only clearly imperative sentences become agent tasks. Everything
-         else — questions, greetings, conversation — gets answered by the
-         brain. Patterns are searched anywhere in the text, not just at the
-         start, so "Hi, could you open..." works the same as "open...". */
-      /* Follow-up confirmations that reference a prior instruction. These need
-         the previous conversation turn extracted and sent to the agent. */
-      const isFollowUp = (history ?? []).length > 0 &&
-        /\b(yeah|yes|yep|yup|ok|okay|sure|go ahead|do it|do that|do what i|just do)\b/i.test(transcript);
-
-      /* "Can you X?" is a polite instruction, not a question. Only treat ?
-         as non-instruction for genuine info questions. */
-      const endsQ = transcript.trim().endsWith("?");
-      const politeRequest = /\b(can you|could you|would you|will you)\b/i.test(transcript);
-      const genuineQuestion = endsQ && !politeRequest &&
-        /^(what|where|when|why|how|who|which|is|are|does|do|did|was|were|has|have)\b/i.test(transcript.trim());
-
-      /* Instructions go to the agent — including screen-related ones, since
-         the agent now has look_at_screen. Only pure screen questions ("what's
-         on my screen?") without an actionable verb fall through to the brain. */
-      const isInstruction = !genuineQuestion && (
-        isFollowUp ||
-        /\b(can you|could you|would you|will you|i need you to|i want you to)\b/i.test(transcript) ||
-        /\bplease\s+(open|create|make|build|run|start|stop|move|copy|delete|install|download|send|write|edit|fix|update|close|launch|save|upload|convert|merge|add|remove|change|rename|find|get|search|show|look|take|put|turn|switch|toggle|enable|disable|clean|clear|organize|sort|schedule|order|post|share|deploy|test|format|print|zip|translate|summarize|draft|generate|fetch|pull|push)\b/i.test(transcript) ||
-        /\b(find|get|search|show|look)\s+(me|for|up)\b/i.test(transcript));
-
-      const screenQ = !isInstruction && isScreenQuestion(transcript) && db.get().permissions.screen && claude.configured();
-
-      if (isInstruction) {
-        /* Instruction — return the transcript so the renderer sends it to the agent. */
-        return { ok: true, transcript, isInstruction: true };
+      /* ---- Walkthrough detection — absolute first gate.
+         If the user wants a walkthrough / tutorial / to be pointed at a UI
+         element, return immediately so the renderer routes to the guide. */
+      if (isWalkthroughRequest(transcript)) {
+        return { ok: true, transcript, isWalkthrough: true };
       }
 
-      /* Everything else — answer from memory (or screen if they asked). */
+      /* Everything left — answer from memory (or screen if they asked). */
+      const screenQ = isScreenQuestion(transcript) && db.get().permissions.screen && claude.configured();
       let result;
       if (screenQ) {
         result = await lookAndAnswer(transcript, { fast: true, history: history ?? [] });
@@ -476,7 +461,6 @@ function register() {
         text: result.text ?? "",
         empty: result.empty,
         detail: result.detail,
-        isInstruction: false,
       };
     } catch (err) {
       return { ok: false, detail: err.message };
@@ -527,6 +511,44 @@ function register() {
     return SCREEN_PATTERNS.some((re) => re.test(text));
   }
 
+  /* ---- Walkthrough detection — mirrors the renderer-side list exactly.
+     Every conceivable way to ask for a tutorial, walkthrough, or to be
+     pointed at a UI element. */
+  const WALKTHROUGH_PATTERNS = [
+    /\bwalk\s+(me\s+)?through\b/i,
+    /\bwalk\s+through\s+(how|the|this|that|it|my|your|setting|process|steps)\b/i,
+    /\bguide\s+(me\s+)?(through|on|to|in|for|with)\b/i,
+    /\btake\s+me\s+through\b/i,
+    /\bshow\s+me\s+how\s+(to|i|we|you|it|the|this|that)\b/i,
+    /\bshow\s+me\s+how\b/i,
+    /\bteach\s+me\b/i,
+    /\bdemonstrate\s+(how\s+to\s+|the\s+|this|that|it)?\b/i,
+    /\b(walkthrough|walk-through|tutorial|guided\s*tour)\s+(of|for|on|about|to)\b/i,
+    /\b(give|show|start|begin|do|run|provide|create)\s+(me\s+)?(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration)\b/i,
+    /\b(i\s+(want|need|would\s+like)\s+(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration))\b/i,
+    /\bstep[\s-]*by[\s-]*step\b/i,
+    /\bshow\s+me\s+where\b/i,
+    /\bpoint\s+(me\s+)?(to|at|where|toward|towards)\b/i,
+    /\bwhere\s+(do|should|can|would|could|shall)\s+i\s+(click|tap|press|find|go|look|navigate|select|start|begin)\b/i,
+    /\bwhere\s+(is|are|was)\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|tab|link|icon|toggle|switch|field|input|checkbox|dropdown|slider|control|panel|section|page|area|tool|toolbar|sidebar|dialog|popup|modal|window|pane)\b/i,
+    /\bwhich\s+(button|menu|tab|option|setting|icon|link|control)\s+(do|should|to|would|could)\b/i,
+    /\b(what|where)\s+(do|should|would|could)\s+i\s+(click|press|tap|select|choose|pick|hit)\b/i,
+    /\bhelp\s+me\s+find\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|control|toggle|icon|link|field|tab)\b/i,
+    /\bfind\s+(the\s+)?(button|setting|option|menu|control|toggle)\s+(for|to)\b/i,
+    /\bhelp\s+me\s+(learn|figure\s+out|understand)\s+how\s+to\b/i,
+    /\bhow\s+(do|can|should|would)\s+i\s+(click|navigate|find|get to|access|open|enable|disable|toggle|turn on|turn off|activate|deactivate|set up|configure|change|modify|adjust|switch)\b/i,
+    /\bshow\s+me\s+the\s+way\s+to\b/i,
+    /\blead\s+me\s+(through|to)\b/i,
+    /\b(show|point\s+out)\s+me\s+(the\s+)?(steps|process|procedure|way|path|workflow|flow)\b/i,
+    /\bwok\s+me\s+through\b/i,
+    /\bguard\s+me\s+through\b/i,
+    /\bwalked?\s+me\s+through\b/i,
+  ];
+
+  function isWalkthroughRequest(text) {
+    return WALKTHROUGH_PATTERNS.some((re) => re.test(text));
+  }
+
   /**
    * Look at the screen, then answer with the fresh observation as extra
    * context. Falls back to normal brain.answer if looking fails.
@@ -547,27 +569,528 @@ function register() {
     return parts.join("\n");
   }
 
+  /* ========================================================= FALLBACK ENGINE
+     A question goes through a chain of increasingly expensive strategies:
+
+       1. LOCAL  — instant, no API call (time, date, math, system info, etc.)
+       2. MEMORY — brain.recall  (already indexed, fast)
+       3. WEB    — browser.run search  (Puppeteer, ~3s)
+       4. FILES  — filesystem glob  (for "where's my file?" questions)
+       5. CLAUDE — the LLM itself, with all gathered context
+
+     Each layer adds context for the next.  The goal: never say "I don't know"
+     when the answer is available locally or on the web. */
+
+  const os = require("node:os");
+  const { clipboard } = require("electron");
+  const { execSync } = require("node:child_process");
+
+  /* -------------------------------------------------------- 1. LOCAL ANSWERS */
+
+  /**
+   * Try to answer instantly from the local machine — no API call, no tokens.
+   * Returns { text, source } or null if this isn't a local-answerable question.
+   */
+  function tryLocalAnswer(question) {
+    const q = question.trim();
+    const ql = q.toLowerCase();
+
+    /* — Time ----------------------------------------------------------- */
+    if (/\b(what\s*time|current\s*time|time\s+is\s+it|what'?s?\s+the\s+time|tell\s+me\s+the\s+time)\b/i.test(ql)) {
+      const now = new Date();
+      return { text: `It's ${now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}.`, source: "clock" };
+    }
+
+    /* — Date / day ----------------------------------------------------- */
+    if (/\b(what\s*(is\s+)?(the\s+)?date|today'?s?\s+date|what\s+day|which\s+day|current\s+date)\b/i.test(ql)) {
+      const now = new Date();
+      return { text: `Today is ${now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}.`, source: "clock" };
+    }
+
+    /* — Simple math / arithmetic --------------------------------------- */
+    const mathPat = /(?:what(?:'?s| is)|calculate|compute|solve|evaluate)\s+(.+)/i;
+    const mathMatch = ql.match(mathPat);
+    if (mathMatch) {
+      const result = safeMathEval(mathMatch[1]);
+      if (result !== null) return { text: `${result}`, source: "math" };
+    }
+    /* Bare arithmetic expressions like "15 * 23" or "sqrt(144)" */
+    if (/^[\d\s+\-*/().%^]+$/.test(q.replace(/\s/g, "")) && q.length >= 3) {
+      const result = safeMathEval(q);
+      if (result !== null) return { text: `${result}`, source: "math" };
+    }
+
+    /* — Unit conversion ------------------------------------------------ */
+    const convMatch = ql.match(/(?:convert\s+)?(\d+\.?\d*)\s*(°?[a-z]+)\s+(?:to|in|into)\s+(°?[a-z]+)/i);
+    if (convMatch) {
+      const result = tryConvert(parseFloat(convMatch[1]), convMatch[2].toLowerCase(), convMatch[3].toLowerCase());
+      if (result !== null) return { text: result, source: "conversion" };
+    }
+
+    /* — Clipboard ------------------------------------------------------ */
+    if (/\b(what('?s| is) (on |in )?(my |the )?clipboard|paste|clipboard content|what did i copy|copied)\b/i.test(ql)
+      && !/\b(copy|clear|set)\b/i.test(ql)) {
+      try {
+        const text = clipboard.readText();
+        if (text && text.trim()) return { text: `Your clipboard contains:\n\n${text.trim().slice(0, 2000)}`, source: "clipboard" };
+        return { text: "Your clipboard is empty.", source: "clipboard" };
+      } catch { /* fall through */ }
+    }
+
+    /* — System info ---------------------------------------------------- */
+    if (/\b(system\s*info|computer\s*info|my\s*(computer|pc|laptop|machine)|specs|hardware)\b/i.test(ql)) {
+      return { text: getSystemInfo(), source: "system" };
+    }
+    if (/\b(how much|amount of)\s*(ram|memory)\b/i.test(ql) || /\b(ram|memory)\s*(usage|free|available|total)\b/i.test(ql)) {
+      const total = (os.totalmem() / (1024 ** 3)).toFixed(1);
+      const free = (os.freemem() / (1024 ** 3)).toFixed(1);
+      return { text: `${total} GB total RAM, ${free} GB free.`, source: "system" };
+    }
+    if (/\b(disk|storage|drive|hard\s*drive|ssd)\s*(space|usage|free|available|left)\b/i.test(ql)
+      || /\b(how much|amount of)\s*(disk|storage|space)\b/i.test(ql)) {
+      return { text: getDiskInfo(), source: "system" };
+    }
+    if (/\b(battery|power|charge)\s*(level|status|left|percent|life)?\b/i.test(ql)) {
+      return { text: getBatteryInfo(), source: "system" };
+    }
+    if (/\b(cpu|processor)\s*(usage|load|temp)?\b/i.test(ql) || /\bhow (busy|hot) is\b.*\b(cpu|processor)\b/i.test(ql)) {
+      const cpus = os.cpus();
+      const model = cpus[0]?.model ?? "unknown";
+      return { text: `${model}, ${cpus.length} cores.`, source: "system" };
+    }
+    if (/\b(os|operating\s*system|windows)\s*(version|build|info)?\b/i.test(ql) && /\b(what|which|version|running)\b/i.test(ql)) {
+      return { text: `${os.type()} ${os.release()} (${os.arch()})`, source: "system" };
+    }
+    if (/\b(ip\s*address|my\s*ip|network\s*address|local\s*ip)\b/i.test(ql)) {
+      const nets = os.networkInterfaces();
+      const ips = Object.values(nets).flat().filter((n) => n && !n.internal && n.family === "IPv4").map((n) => n.address);
+      return { text: ips.length ? `Your local IP: ${ips.join(", ")}` : "No network connection found.", source: "system" };
+    }
+    if (/\b(username|user\s*name|who\s*am\s*i|my\s*name|computer\s*name|hostname)\b/i.test(ql)) {
+      return { text: `User: ${os.userInfo().username}, Computer: ${os.hostname()}`, source: "system" };
+    }
+    if (/\b(uptime|how long.*(running|been on|up))\b/i.test(ql)) {
+      const secs = os.uptime();
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      return { text: `System has been running for ${h} hours and ${m} minutes.`, source: "system" };
+    }
+    if (/\b(screen\s*resolution|display\s*resolution|monitor\s*size|resolution)\b/i.test(ql)) {
+      try {
+        const displays = require("electron").screen.getAllDisplays();
+        const info = displays.map((d, i) => `Display ${i + 1}: ${d.size.width}×${d.size.height} (${d.scaleFactor}x scale)`).join(", ");
+        return { text: info, source: "system" };
+      } catch { /* fall through */ }
+    }
+
+    /* — Open windows / running apps ------------------------------------ */
+    if (/\b(what.*(open|running)|open\s*(windows|apps|programs|applications)|running\s*(apps|programs|processes)|list.*(windows|apps))\b/i.test(ql)) {
+      return { text: null, source: "windows" }; /* signal: needs async */
+    }
+
+    /* — Screen resolution ---------------------------------------------- */
+    if (/\b(screen\s*size|display\s*size)\b/i.test(ql)) {
+      try {
+        const d = require("electron").screen.getPrimaryDisplay();
+        return { text: `${d.size.width}×${d.size.height} at ${d.scaleFactor}x scale.`, source: "system" };
+      } catch { /* fall through */ }
+    }
+
+    return null;
+  }
+
+  /**
+   * Async local answers — for things that need a subprocess (windows list, etc.)
+   */
+  async function tryLocalAnswerAsync(question, localResult) {
+    if (!localResult) return null;
+    if (localResult.source === "windows" && localResult.text === null) {
+      try {
+        const wins = await win32.listWindows();
+        if (!wins || wins.length === 0) return { text: "I can't see any open windows right now.", source: "windows" };
+        const list = wins
+          .filter((w) => w.title && w.title.length > 1)
+          .slice(0, 20)
+          .map((w) => `• ${w.title}`)
+          .join("\n");
+        return { text: `Open windows:\n\n${list}`, source: "windows" };
+      } catch { return null; }
+    }
+    return localResult;
+  }
+
+  /* ---------------------------------------------------------- math helpers */
+
+  function safeMathEval(expr) {
+    /* Normalise common spoken math */
+    let e = expr
+      .replace(/\bsqrt\s*\(?\s*(\d+)\s*\)?/gi, "Math.sqrt($1)")
+      .replace(/\babs\s*\(?\s*(-?\d+)\s*\)?/gi, "Math.abs($1)")
+      .replace(/\bpi\b/gi, "Math.PI")
+      .replace(/\^/g, "**")
+      .replace(/\bx\b/gi, "*")
+      .replace(/\btimes\b/gi, "*")
+      .replace(/\bplus\b/gi, "+")
+      .replace(/\bminus\b/gi, "-")
+      .replace(/\bdivided\s*by\b/gi, "/")
+      .replace(/\bmod\b/gi, "%")
+      .replace(/[^0-9+\-*/().%\s,Matheiqrtbsopclg]/g, "");
+    if (!e.trim() || e.trim().length < 1) return null;
+    try {
+      const result = Function(`"use strict"; return (${e})`)();
+      if (typeof result === "number" && isFinite(result)) return Math.round(result * 1e10) / 1e10;
+    } catch { /* not evaluable */ }
+    return null;
+  }
+
+  /* ---------------------------------------------------------- unit conversion */
+
+  function tryConvert(value, from, to) {
+    const conversions = {
+      /* Length */
+      "km_mi": 0.621371, "mi_km": 1.60934, "m_ft": 3.28084, "ft_m": 0.3048,
+      "cm_in": 0.393701, "in_cm": 2.54, "m_yd": 1.09361, "yd_m": 0.9144,
+      "mm_in": 0.0393701, "in_mm": 25.4, "km_m": 1000, "m_km": 0.001,
+      /* Weight */
+      "kg_lb": 2.20462, "lb_kg": 0.453592, "kg_lbs": 2.20462, "lbs_kg": 0.453592,
+      "g_oz": 0.035274, "oz_g": 28.3495, "kg_g": 1000, "g_kg": 0.001,
+      "lb_oz": 16, "oz_lb": 0.0625,
+      /* Temperature */
+      "c_f": null, "f_c": null, "°c_°f": null, "°f_°c": null,
+      /* Volume */
+      "l_gal": 0.264172, "gal_l": 3.78541, "ml_oz": 0.033814, "oz_ml": 29.5735,
+      "l_ml": 1000, "ml_l": 0.001, "cup_ml": 236.588, "ml_cup": 0.00423,
+      /* Speed */
+      "mph_kmh": 1.60934, "kmh_mph": 0.621371, "ms_kmh": 3.6, "kmh_ms": 0.277778,
+      /* Digital */
+      "gb_mb": 1024, "mb_gb": 1/1024, "tb_gb": 1024, "gb_tb": 1/1024,
+      "mb_kb": 1024, "kb_mb": 1/1024,
+      /* Time */
+      "hr_min": 60, "min_hr": 1/60, "hr_sec": 3600, "sec_hr": 1/3600,
+      "day_hr": 24, "hr_day": 1/24, "week_day": 7, "day_week": 1/7,
+      "min_sec": 60, "sec_min": 1/60,
+    };
+    /* Normalise aliases */
+    const aliases = {
+      hours: "hr", hour: "hr", hrs: "hr", h: "hr",
+      minutes: "min", minute: "min", mins: "min",
+      seconds: "sec", second: "sec", secs: "sec", s: "sec",
+      days: "day", weeks: "week",
+      miles: "mi", mile: "mi",
+      kilometers: "km", kilometer: "km", kilometres: "km",
+      meters: "m", meter: "m", metres: "m",
+      centimeters: "cm", centimeter: "cm",
+      millimeters: "mm", millimeter: "mm",
+      inches: "in", inch: "in",
+      feet: "ft", foot: "ft",
+      yards: "yd", yard: "yd",
+      kilograms: "kg", kilogram: "kg", kgs: "kg",
+      pounds: "lb", pound: "lb",
+      grams: "g", gram: "g",
+      ounces: "oz", ounce: "oz",
+      liters: "l", liter: "l", litres: "l", litre: "l",
+      gallons: "gal", gallon: "gal",
+      milliliters: "ml", milliliter: "ml",
+      cups: "cup",
+      celsius: "c", centigrade: "c",
+      fahrenheit: "f",
+      gigabytes: "gb", gigabyte: "gb",
+      megabytes: "mb", megabyte: "mb",
+      terabytes: "tb", terabyte: "tb",
+      kilobytes: "kb", kilobyte: "kb",
+    };
+    const a = aliases[from] ?? from.replace(/°/g, "");
+    const b = aliases[to] ?? to.replace(/°/g, "");
+    const key = `${a}_${b}`;
+
+    /* Temperature is special — not a simple multiply. */
+    if ((a === "c" && b === "f") || (a === "°c" && b === "°f")) {
+      const r = Math.round((value * 9/5 + 32) * 100) / 100;
+      return `${value}°C = ${r}°F`;
+    }
+    if ((a === "f" && b === "c") || (a === "°f" && b === "°c")) {
+      const r = Math.round(((value - 32) * 5/9) * 100) / 100;
+      return `${value}°F = ${r}°C`;
+    }
+
+    const factor = conversions[key];
+    if (factor != null) {
+      const r = Math.round(value * factor * 10000) / 10000;
+      return `${value} ${from} = ${r} ${to}`;
+    }
+    return null;
+  }
+
+  /* ---------------------------------------------------------- system helpers */
+
+  function getSystemInfo() {
+    const cpus = os.cpus();
+    const totalMem = (os.totalmem() / (1024 ** 3)).toFixed(1);
+    const freeMem = (os.freemem() / (1024 ** 3)).toFixed(1);
+    return [
+      `OS: ${os.type()} ${os.release()} (${os.arch()})`,
+      `CPU: ${cpus[0]?.model ?? "unknown"}, ${cpus.length} cores`,
+      `RAM: ${freeMem} GB free / ${totalMem} GB total`,
+      `User: ${os.userInfo().username}`,
+      `Computer: ${os.hostname()}`,
+      getDiskInfo(),
+    ].join("\n");
+  }
+
+  function getDiskInfo() {
+    try {
+      if (process.platform === "win32") {
+        const raw = execSync("wmic logicaldisk get size,freespace,caption", { encoding: "utf8", timeout: 3000 });
+        const lines = raw.trim().split("\n").slice(1).filter((l) => l.trim());
+        return lines.map((l) => {
+          const parts = l.trim().split(/\s+/);
+          if (parts.length >= 3) {
+            const free = (parseInt(parts[1]) / (1024 ** 3)).toFixed(1);
+            const total = (parseInt(parts[2]) / (1024 ** 3)).toFixed(1);
+            return `${parts[0]} ${free} GB free / ${total} GB total`;
+          }
+          return l.trim();
+        }).join(", ");
+      }
+      const raw = execSync("df -h / | tail -1", { encoding: "utf8", timeout: 3000 });
+      return `Disk: ${raw.trim()}`;
+    } catch { return "Disk info unavailable."; }
+  }
+
+  function getBatteryInfo() {
+    try {
+      if (process.platform === "win32") {
+        const raw = execSync(
+          "powershell -NoProfile -Command \"(Get-WmiObject Win32_Battery | Select-Object EstimatedChargeRemaining,BatteryStatus | ConvertTo-Json)\"",
+          { encoding: "utf8", timeout: 5000 },
+        );
+        const bat = JSON.parse(raw);
+        const pct = bat.EstimatedChargeRemaining ?? "?";
+        const charging = bat.BatteryStatus === 2 ? " (charging)" : "";
+        return `Battery: ${pct}%${charging}`;
+      }
+    } catch { /* fall through */ }
+    return "Battery info unavailable (desktop or unsupported).";
+  }
+
+  /* -------------------------------------------------------- 2. FILE SEARCH */
+
+  /**
+   * Search the filesystem for files matching a query — for "where's my resume?"
+   * or "find my presentation" questions.  Searches user-approved root directories.
+   */
+  async function searchFiles(query) {
+    const roots = db.get().roots ?? [];
+    if (roots.length === 0) {
+      /* Fall back to common user directories. */
+      const home = os.homedir();
+      roots.push(
+        path.join(home, "Documents"),
+        path.join(home, "Desktop"),
+        path.join(home, "Downloads"),
+      );
+    }
+
+    /* Extract likely filename keywords. */
+    const keywords = query
+      .toLowerCase()
+      .replace(/\b(find|search|where|is|are|my|the|a|an|file|document|folder|called|named|for)\b/g, "")
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+
+    if (keywords.length === 0) return null;
+
+    /* Build a glob pattern. */
+    const pattern = `*${keywords.join("*")}*`;
+    const found = [];
+
+    for (const root of roots) {
+      try {
+        const cmd = process.platform === "win32"
+          ? `powershell -NoProfile -Command "Get-ChildItem -Path '${root}' -Recurse -Name -Filter '${pattern}' -ErrorAction SilentlyContinue | Select-Object -First 15"`
+          : `find "${root}" -iname "${pattern}" -maxdepth 4 2>/dev/null | head -15`;
+        const raw = execSync(cmd, { encoding: "utf8", timeout: 8000 });
+        const files = raw.trim().split("\n").filter(Boolean);
+        for (const f of files) {
+          const full = path.isAbsolute(f) ? f : path.join(root, f);
+          found.push(full);
+        }
+      } catch { /* skip this root */ }
+    }
+
+    if (found.length === 0) return null;
+    return `Files matching "${keywords.join(" ")}":\n\n${found.slice(0, 15).map((f) => `• ${f}`).join("\n")}`;
+  }
+
+  /* -------------------------------------------------------- 3. WEB SEARCH */
+
+  /**
+   * Returns true for questions that are about general knowledge, facts, how-tos,
+   * errors, concepts — things the web can answer.  Returns false for personal
+   * questions that only memory could answer.
+   */
+  function needsWebSearch(question, memoryHits) {
+    if (memoryHits >= 3) return false;
+    const q = question.toLowerCase();
+
+    /* Personal / memory questions — only memory can answer these. */
+    if (/\b(i|my|me|we|our)\b.*(yesterday|last week|earlier|today|this morning|before|previously|last time)/i.test(q)) return false;
+    if (/\bwhat (was|were|did|have) (i|we)\b/i.test(q)) return false;
+    if (/\bdo you remember\b/i.test(q)) return false;
+    if (/\b(my|our) (file|project|code|document|folder|schedule|meeting|task|routine)\b/i.test(q)) return false;
+
+    /* Knowledge / factual / how-to — web search will help. */
+    const webPatterns = [
+      /\b(what is|what are|what does|what's|whats)\b/i,
+      /\b(how (do|to|does|can|should|would))\b/i,
+      /\b(explain|define|meaning of|definition|describe)\b/i,
+      /\b(why (is|are|does|do|did|can|would|should))\b/i,
+      /\b(difference between|compare|vs\.?|versus)\b/i,
+      /\b(formula|equation|syntax|shortcut|command|function)\b/i,
+      /\b(error|exception|bug|crash|fail|broken|not working|issue)\b/i,
+      /\b(best (way|practice|approach|method)|recommended)\b/i,
+      /\b(latest|recent|current|new|update|news|2026|2025)\b/i,
+      /\b(convert|calculate|translate)\b/i,
+      /\b(find|search|look up|lookup|google)\b/i,
+      /\b(tutorial|guide|documentation|docs|example|resource)\b/i,
+      /\b(install|setup|set up|configure|download)\b/i,
+      /\b(who (is|are|was|were|wrote|created|invented|founded))\b/i,
+      /\b(when (is|was|did|does|will))\b/i,
+      /\b(where (is|are|can|do))\b/i,
+      /\b(requirements? for|prerequisites?|qualifications?)\b/i,
+      /\b(price|pricing|cost|free|paid|subscription)\b/i,
+      /\b(summary|summarize|overview|recap)\b/i,
+      /\b(citation|cite|reference|bibliography|apa|mla)\b/i,
+      /\b(recipe|ingredients|how .* make|how .* cook)\b/i,
+      /\b(weather|forecast|temperature|rain)\b/i,
+      /\b(stock|market|crypto|bitcoin|ethereum)\b/i,
+      /\b(score|game|match|standings|league)\b/i,
+      /\b(movie|film|show|series|cast|director|actor|actress)\b/i,
+      /\b(song|album|artist|band|music|lyrics)\b/i,
+      /\b(country|capital|population|language|currency)\b/i,
+      /\b(university|college|school|program|degree|admission)\b/i,
+      /\b(law|legal|regulation|statute|act|rights)\b/i,
+      /\b(health|symptom|medication|medicine|treatment|disease)\b/i,
+      /\b(api|sdk|library|framework|package|module|npm|pip)\b/i,
+      /\b(alternative|replacement|substitute|instead of)\b/i,
+      /\b(review|rating|opinion|worth it|should i)\b/i,
+    ];
+    if (webPatterns.some((re) => re.test(q))) return true;
+
+    /* If memory has zero hits, try web as a last resort. */
+    if (memoryHits === 0) return true;
+    return false;
+  }
+
+  /**
+   * Returns true for "where's my file?" style questions.
+   */
+  function isFileSearchQuestion(question) {
+    return /\b(where('?s| is| are| did)|find|locate|search for)\b.*\b(file|document|folder|presentation|spreadsheet|pdf|resume|report|essay|paper|photo|image|video|download)\b/i.test(question)
+      || /\b(file|document|folder)\b.*\b(where|find|locate|search)\b/i.test(question);
+  }
+
+  /**
+   * Quick web search — returns formatted text for context, or null on failure.
+   */
+  async function quickWebSearch(query) {
+    try {
+      const result = await browser.run({ kind: "search", query });
+      if (!result.ok || !result.text) return null;
+      return result.text.slice(0, 4000);
+    } catch (err) {
+      console.error("[doppel] web search failed:", err.message);
+      return null;
+    }
+  }
+
+  /* -------------------------------------------------------- FULL RESOLUTION */
+
+  /**
+   * The master answer function.  Tries every fallback in order:
+   * local → memory → web → files → Claude with all context.
+   */
+  async function resolveQuestion(question, opts = {}) {
+    const q = String(question ?? "").trim();
+    if (!q) return { ok: false, reason: "empty" };
+
+    /* 1. Local instant answer — no API call. */
+    let local = tryLocalAnswer(q);
+    if (local) local = await tryLocalAnswerAsync(q, local);
+    if (local?.text) {
+      /* Still pass through Claude for personality, but give it the answer. */
+      return await brain.answer(q, {
+        ...opts,
+        webContext: `[Local answer — ${local.source}]: ${local.text}`,
+        onText: (delta) => broadcast("doppel:answer-stream", delta),
+        onThinking: (delta) => broadcast("doppel:thinking-stream", delta),
+      });
+    }
+
+    /* 2. Memory check — how much does the brain know? */
+    const pack = brain.recall(q, { limit: 3, budgetTokens: 800 });
+    const memHits = pack.entities.length + pack.episodes.length + pack.digests.length;
+
+    /* 3. Web search — if memory is thin and question is searchable. */
+    let webContext = null;
+    if (needsWebSearch(q, memHits)) {
+      broadcast("doppel:thinking-stream", "Searching the web...\n");
+      webContext = await quickWebSearch(q);
+    }
+
+    /* 4. File search — if it's a "where's my file?" question. */
+    if (!webContext && isFileSearchQuestion(q)) {
+      broadcast("doppel:thinking-stream", "Searching your files...\n");
+      const files = await searchFiles(q);
+      if (files) webContext = `[File search results]:\n${files}`;
+    }
+
+    /* 5. Answer with all gathered context. */
+    const result = await brain.answer(q, {
+      ...opts,
+      webContext,
+      onText: (delta) => broadcast("doppel:answer-stream", delta),
+      onThinking: (delta) => broadcast("doppel:thinking-stream", delta),
+    });
+    return result;
+  }
+
   async function lookAndAnswer(question, opts) {
     /* One API call: capture the screen, send the image + question together.
        No separate vision analysis step — the model reads the screen and
-       answers in one shot. */
+       answers in one shot. Streamed with thinking so the user sees reasoning. */
     const shot = await screen.capture({ maxEdge: 1366 });
     if (!shot.ok) {
       /* Fall back to recent text-based observations. */
       const ctx = recentScreenContext();
       if (ctx) {
-        const result = await brain.answer(question, { ...opts, screenContext: ctx });
+        const result = await brain.answer(question, {
+          ...opts,
+          screenContext: ctx,
+          onText: (delta) => broadcast("doppel:answer-stream", delta),
+          onThinking: (delta) => broadcast("doppel:thinking-stream", delta),
+        });
         if (result.ok && result.text) brain.rememberConversation(question, result.text, ctx);
         return result;
       }
       return { ok: true, text: shot.detail || "The screen capture didn't come back." };
     }
 
-    const pack = await brain.recallSemantic(question, { limit: 6, budgetTokens: 1200 });
+    const pack = brain.recall(question, { limit: 4, budgetTokens: 800 });
     const found = pack.entities.length + pack.episodes.length + pack.digests.length;
     const memoryBlock = found > 0
       ? `\n\nRelevant memories:\n${brain.packToText(pack)}`
       : "";
+
+    /* If the question is about an error, concept, or how-to, web search
+       adds massive value on top of the screen context. */
+    let webBlock = "";
+    if (needsWebSearch(question, found)) {
+      broadcast("doppel:thinking-stream", "Looking at your screen and searching the web...\n");
+      const web = await quickWebSearch(question);
+      if (web) webBlock = `\n\nWeb search results:\n${web}`;
+    }
 
     const messages = [
       ...(opts.history ?? []).map((h) => ({ role: h.role, content: h.content })),
@@ -577,17 +1100,19 @@ function register() {
           screen.asImageBlock(shot),
           {
             type: "text",
-            text: `They said: "${question}"\n\nThat's their screen right now.${memoryBlock}`,
+            text: `They said: "${question}"\n\nThat's their screen right now.${memoryBlock}${webBlock}`,
           },
         ],
       },
     ];
 
-    const result = await claude.ask({
-      system: `You are Doppel — a personal agent on this person's computer. You can see their screen. Answer their question about what's on screen directly and conversationally. Be specific — quote text, name apps, describe what you see. First person, short sentences, no emoji.`,
-      effort: "low",
-      thinking: false,
-      maxTokens: 500,
+    const result = await claude.streamAsk({
+      system: `You are Doppel — a personal agent on this person's computer. You can see their screen right now. Answer their question about what's on screen directly and conversationally. Be specific — quote text, name apps, describe what you see. If web search results are provided, use them to give accurate answers — especially for errors, how-tos, and concepts. First person, short sentences, no emoji.`,
+      maxTokens: 2048,
+      fast: false,
+      thinking: true,
+      onText: (delta) => broadcast("doppel:answer-stream", delta),
+      onThinking: (delta) => broadcast("doppel:thinking-stream", delta),
       messages,
     });
 
@@ -611,7 +1136,8 @@ function register() {
   });
 
   /* Memories are kept as vectors and terse records; this is where they become
-     English again, and only because someone asked. */
+     English again, and only because someone asked.  Both handlers now go
+     through resolveQuestion() — the full fallback chain. */
   ipcMain.handle("brain:ask", async (_e, question, history) => {
     const gate = tokens.canAfford("brain:ask");
     if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
@@ -622,7 +1148,7 @@ function register() {
         tokens.spend("brain:ask");
         return r;
       }
-      const result = await brain.answer(q, { history: history ?? [] });
+      const result = await resolveQuestion(q, { fast: true, history: history ?? [] });
       if (result.ok && result.text) brain.rememberConversation(q, result.text);
       tokens.spend("brain:ask");
       return result;
@@ -631,8 +1157,6 @@ function register() {
     }
   });
 
-  /* Fast path — smaller context, low effort, no thinking. For the whisper panel
-     where speed matters more than thoroughness. */
   ipcMain.handle("brain:ask-fast", async (_e, question, history) => {
     const gate = tokens.canAfford("brain:ask-fast");
     if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
@@ -643,11 +1167,7 @@ function register() {
         tokens.spend("brain:ask-fast");
         return r;
       }
-      const result = await brain.answer(q, {
-        fast: true,
-        history: history ?? [],
-        onText: (delta) => broadcast("doppel:answer-stream", delta),
-      });
+      const result = await resolveQuestion(q, { fast: true, history: history ?? [] });
       if (result.ok && result.text) brain.rememberConversation(q, result.text);
       tokens.spend("brain:ask-fast");
       return result;
@@ -739,16 +1259,6 @@ function register() {
 
   handle("brain:ingestSupported", () => ingest.supportedExtensions());
 
-  /* --- routines --------------------------------------------------------- */
-
-  ipcMain.handle("routines:list", () => routines.list());
-  ipcMain.handle("routines:proposals", () => routines.proposals());
-  handle("routines:accept", (patternId) => routines.accept(patternId));
-  handle("routines:reject", (patternId) => routines.reject(patternId));
-  handle("routines:remove", (routineId) => routines.remove(routineId));
-  handle("routines:toggle", (routineId) => routines.toggle(routineId));
-  handle("routines:runNow", (routineId) => routines.runNow(routineId));
-
   /* --- add-ons ---------------------------------------------------------- */
 
   ipcMain.handle("addons:list", () => addons.list());
@@ -769,15 +1279,121 @@ function register() {
     db.update((s) => { s.nudges.enabled = !!on; });
   });
 
-  handle("nudge:act", (id) => {
-    const result = nudge.act(id);
-    if (!result.ok) return result;
-    const n = result.nudge;
-    if (n.kind === "offer" && n.detail) {
-      agent.run({ instruction: n.detail, title: n.text }).catch(() => {});
-    }
-    return result;
+  handle("nudge:act", (id) => nudge.act(id));
+
+  /* --- inbox — task queue for external agents ---------------------------- */
+
+  const INBOX_FILE = path.join(db.paths.dir, "inbox.json");
+
+  function readInbox() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(INBOX_FILE, "utf8"));
+      return Array.isArray(raw) ? raw : [];
+    } catch { return []; }
+  }
+  function writeInbox(tasks) {
+    fs.writeFileSync(INBOX_FILE, JSON.stringify(tasks, null, 2));
+  }
+
+  ipcMain.handle("inbox:list", () => readInbox());
+
+  handle("inbox:create", (instruction, autoApprove, target) => {
+    const tasks = readInbox();
+    const task = {
+      id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+      status: autoApprove ? "approved" : "pending",
+      instruction,
+      source: "user",
+      target: target || "any",
+      agent: null,
+      claimedAt: null,
+      result: null,
+      completedAt: null,
+    };
+    tasks.unshift(task);
+    writeInbox(tasks);
+    pushState();
+    return task;
   });
+
+  handle("inbox:approve", (id) => {
+    const tasks = readInbox();
+    const task = tasks.find((t) => t.id === id);
+    if (!task || task.status !== "pending") return { ok: false };
+    task.status = "approved";
+    writeInbox(tasks);
+    pushState();
+    return { ok: true };
+  });
+
+  handle("inbox:reject", (id) => {
+    const tasks = readInbox();
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return { ok: false };
+    task.status = "rejected";
+    writeInbox(tasks);
+    pushState();
+    return { ok: true };
+  });
+
+  handle("inbox:retry", (id) => {
+    const tasks = readInbox();
+    const task = tasks.find((t) => t.id === id);
+    if (!task || (task.status !== "failed" && task.status !== "rejected")) return { ok: false };
+    task.status = "approved";
+    task.agent = null;
+    task.claimedAt = null;
+    task.result = null;
+    task.completedAt = null;
+    writeInbox(tasks);
+    pushState();
+    return { ok: true };
+  });
+
+  handle("inbox:clear", () => {
+    const tasks = readInbox().filter((t) => t.status !== "done" && t.status !== "failed" && t.status !== "rejected");
+    writeInbox(tasks);
+    pushState();
+    return { ok: true };
+  });
+
+  /* --- guide — Clicky-style walkthroughs -------------------------------- */
+
+  ipcMain.handle("guide:findElement", async (_e, description) => {
+    try { return await guide.findElement(description); }
+    catch (err) { return { ok: false, detail: err.message }; }
+  });
+
+  handle("guide:pointAt", (x, y, instruction) => {
+    guide.pointAt(x, y, instruction);
+  });
+
+  handle("guide:clearPointer", () => guide.clearPointer());
+
+  ipcMain.handle("guide:startWalkthrough", async (_e, goal) => {
+    try { return await guide.startWalkthrough(goal); }
+    catch (err) { return { ok: false, detail: err.message }; }
+  });
+
+  ipcMain.handle("guide:nextStep", async () => {
+    try { return await guide.nextStep(); }
+    catch (err) { return { ok: false, detail: err.message }; }
+  });
+
+  ipcMain.handle("guide:prevStep", async () => {
+    try { return await guide.prevStep(); }
+    catch (err) { return { ok: false, detail: err.message }; }
+  });
+
+  handle("guide:endWalkthrough", () => guide.endWalkthrough());
+
+  ipcMain.handle("guide:doStep", async () => {
+    try { return await guide.doCurrentStep(); }
+    catch (err) { return { ok: false, detail: err.message }; }
+  });
+
+  ipcMain.handle("guide:getState", () => guide.getState());
 
   /* --- biometric / security --------------------------------------------- */
 
@@ -804,53 +1420,6 @@ function register() {
     biometric.lock();
     broadcast("doppel:unlocked", false);
   });
-
-  /* --- workflow recording ----------------------------------------------- */
-
-  handle("recorder:start", (title) => recorder.start(title));
-
-  ipcMain.handle("recorder:stop", async () => {
-    try {
-      return await recorder.stop();
-    } catch (err) {
-      return { ok: false, reason: "error", detail: err.message };
-    }
-  });
-
-  ipcMain.handle("recorder:active", () => recorder.active());
-
-  handle("recorder:abort", () => recorder.abort());
-
-  handle("recorder:save", (procedure) => recorder.saveAsRoutine(procedure));
-
-  /* --- the agent -------------------------------------------------------- */
-
-  ipcMain.handle("agent:get", () => agent.snapshot());
-
-  ipcMain.handle("agent:history", (_e, limit) => {
-    const runs = db.get().runs ?? [];
-    return runs.slice(0, limit ?? 20).map((r) => ({
-      id: r.id,
-      title: r.routineTitle ?? r.instruction?.slice(0, 80) ?? "Untitled",
-      at: r.at,
-      durationSec: r.durationSec ?? 0,
-      outcome: r.outcome ?? "stopped",
-      note: r.note ?? "",
-      steps: r.steps?.length ?? 0,
-      changes: r.changes ?? [],
-    }));
-  });
-
-  handle("agent:run", async ({ instruction, routineId, title, mode }) => {
-    const gate = tokens.canAfford("agent:run");
-    if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
-    const result = await agent.run({ instruction, routineId, title, mode });
-    tokens.spend("agent:run");
-    return result;
-  });
-
-  handle("agent:answer", (id, choice) => agent.answerApproval(id, choice));
-  handle("agent:abort", (id) => agent.abort(id));
 
   /* --- the account ------------------------------------------------------ */
 
@@ -895,11 +1464,31 @@ function register() {
   handle("billing:setPlan", (plan) => tokens.setPlan(plan));
   handle("billing:addTokens", (amount) => tokens.addTokens(amount));
 
+  handle("billing:checkout", async (priceId) => {
+    const result = await account.createCheckout(priceId);
+    if (result.ok && result.url) {
+      shell.openExternal(result.url);
+      return { ok: true, sessionId: result.sessionId };
+    }
+    return result;
+  });
+
+  handle("billing:verifyPurchase", async (sessionId) => {
+    const result = await account.verifyCheckout(sessionId);
+    if (!result.ok) return result;
+    if (result.type === "pro") {
+      tokens.setPlan("pro");
+    } else if (result.type === "tokens" && result.tokens > 0) {
+      tokens.addTokens(result.tokens);
+      if (db.get().billing?.plan === "free") tokens.setPlan("paygo");
+    }
+    return { ok: true, type: result.type, tokens: result.tokens };
+  });
+
   /* --- misc ------------------------------------------------------------- */
   ipcMain.handle("windows:list", () => win32.listWindows());
 
   handle("app:reset", () => {
-    agent.abort();
     db.reset();
     brain.wipe();
     observer.restart();
@@ -924,11 +1513,16 @@ function register() {
     if (!last?.app) return { ok: false, reason: "nothing" };
 
     try {
-      /* Try to bring that app to the foreground via PowerShell. */
       const { execSync } = require("child_process");
-      execSync(
-        `powershell -NoProfile -Command "Start-Process '${last.app.replace(/'/g, "''")}'"`
-      );
+      if (process.platform === "win32") {
+        execSync(
+          `powershell -NoProfile -Command "Start-Process '${last.app.replace(/'/g, "''")}'"`
+        );
+      } else if (process.platform === "darwin") {
+        execSync(`open -a ${JSON.stringify(last.app)}`);
+      } else {
+        execSync(`xdg-open ${JSON.stringify(last.app)}`);
+      }
       return { ok: true, app: last.app, title: last.text };
     } catch {
       return { ok: false, reason: "launch-failed", app: last.app };
@@ -937,61 +1531,11 @@ function register() {
 
   /* --- MCP integration --------------------------------------------------- */
 
-  ipcMain.handle("mcp:connectClaude", () => {
-    const platform = process.platform;
-    let configDir;
-    if (platform === "win32") {
-      configDir = path.join(process.env.APPDATA || "", "Claude");
-    } else if (platform === "darwin") {
-      configDir = path.join(require("os").homedir(), "Library", "Application Support", "Claude");
-    } else {
-      configDir = path.join(require("os").homedir(), ".config", "Claude");
-    }
+  const mcpScript = path.join(__dirname, "..", "mcp-server.js").replace(/\\/g, "/");
+  const mcpSnippet = { command: "node", args: [mcpScript] };
 
-    const configFile = path.join(configDir, "claude_desktop_config.json");
-    const mcpScript = path.join(__dirname, "..", "mcp-server.js");
-
-    /* Read existing config or start fresh. */
-    let config = {};
-    try {
-      config = JSON.parse(fs.readFileSync(configFile, "utf8"));
-    } catch {
-      /* file doesn't exist yet — that's fine */
-    }
-
-    if (!config.mcpServers) config.mcpServers = {};
-    config.mcpServers.doppel = {
-      command: "node",
-      args: [mcpScript.replace(/\\/g, "/")],
-    };
-
-    try {
-      fs.mkdirSync(configDir, { recursive: true });
-      fs.writeFileSync(configFile, JSON.stringify(config, null, 2), "utf8");
-      return { ok: true, path: configFile };
-    } catch (err) {
-      return { ok: false, detail: err.message };
-    }
-  });
-
-  ipcMain.handle("mcp:checkClaude", () => {
-    const platform = process.platform;
-    let configDir;
-    if (platform === "win32") {
-      configDir = path.join(process.env.APPDATA || "", "Claude");
-    } else if (platform === "darwin") {
-      configDir = path.join(require("os").homedir(), "Library", "Application Support", "Claude");
-    } else {
-      configDir = path.join(require("os").homedir(), ".config", "Claude");
-    }
-
-    const configFile = path.join(configDir, "claude_desktop_config.json");
-    try {
-      const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
-      return { connected: !!config?.mcpServers?.doppel };
-    } catch {
-      return { connected: false };
-    }
+  ipcMain.handle("mcp:snippet", () => {
+    return { snippet: mcpSnippet, scriptPath: mcpScript };
   });
 
   db.subscribe(() => {});

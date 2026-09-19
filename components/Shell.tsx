@@ -23,7 +23,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const paused = useDoppel((s) => s.observation.paused);
   const narration = useDoppel((s) => s.narration);
   const nudges = useDoppel((s) => s.nudges);
-  const agents = useDoppel((s) => s.agents);
   const now = useDoppel((s) => s.now);
   const flash = useDoppel((s) => s.flash);
   const setFlash = useDoppel((s) => s.setFlash);
@@ -46,22 +45,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   /* ---- derived state for ambient presence ---- */
 
-  const activeAgent = agents.find((t) => t.status === "parked") ?? agents.find((t) => t.status === "running") ?? null;
-  const agentBusy = agents.some((t) => ["running", "parked"].includes(t.status));
-
   const mascotMood: Mood = paused
     ? "paused"
-    : agentBusy
-      ? "working"
-      : narration[0] && now - narration[0].at < 15_000
-        ? "watching"
-        : "idle";
+    : narration[0] && now - narration[0].at < 15_000
+      ? "watching"
+      : "idle";
 
   const lastSeen = narration[0];
   const hasNudges = nudges.length > 0;
 
-  /* Whether Doppel is actively doing something (watching or working). */
-  const alive = !paused && (mascotMood === "watching" || mascotMood === "working");
+  /* Whether Doppel is actively doing something (watching). */
+  const alive = !paused && mascotMood === "watching";
 
   return (
     <div
@@ -152,7 +146,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </nav>
 
         {/* Feature 2: ambient status — what Doppel last noticed */}
-        <AmbientStatus lastSeen={lastSeen} agentBusy={!!agentBusy} agent={activeAgent} now={now} paused={paused} />
+        <AmbientStatus lastSeen={lastSeen} now={now} paused={paused} />
 
         {/* Feature 6: focus timer — how long you've been in one app */}
         <FocusTimer narration={narration} now={now} paused={paused} />
@@ -212,13 +206,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 interface AmbientProps {
   lastSeen: { at: number; app: string | null; text: string; salience: number } | undefined;
-  agentBusy: boolean;
-  agent: { title: string; step: number } | null;
   now: number;
   paused: boolean;
 }
 
-function AmbientStatus({ lastSeen, agentBusy, agent, now, paused }: AmbientProps) {
+function AmbientStatus({ lastSeen, now, paused }: AmbientProps) {
   if (paused) {
     return (
       <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
@@ -228,20 +220,6 @@ function AmbientStatus({ lastSeen, agentBusy, agent, now, paused }: AmbientProps
         >
           Paused
         </p>
-      </div>
-    );
-  }
-
-  if (agentBusy && agent) {
-    return (
-      <div className="mt-6 hidden md:block" style={{ minHeight: 40 }}>
-        <p
-          className="agent-voice"
-          style={{ fontSize: "var(--text-xs, 11px)", color: "var(--primary)" }}
-        >
-          Working on: {agent.title.length > 36 ? agent.title.slice(0, 36) + "\u2026" : agent.title}
-        </p>
-        <p className="micro-label mt-1">step {agent.step}</p>
       </div>
     );
   }

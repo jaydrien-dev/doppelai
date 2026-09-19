@@ -11,15 +11,23 @@
  * gets access to everything Doppel has observed.
  *
  * Tools:
- *   recall          — Hybrid semantic+keyword search over memory
- *   ask             — AI-powered Q&A over memory (uses Claude API)
- *   remember        — Store information into Doppel's brain from external AIs
- *   recent_activity — Last N observations
- *   screen_now      — Current screen context and what user is doing
- *   known_entities  — People, apps, projects Doppel has learned about
- *   user_context    — Full current state: app, narration, watched folders
- *   patterns        — Behavioral patterns: app usage, time distribution
- *   daily_summary   — All observations + digest for a given date
+ *   recall           — Hybrid semantic+keyword search over memory
+ *   ask              — AI-powered Q&A over memory (uses Claude API)
+ *   remember         — Store information into Doppel's brain from external AIs
+ *   recent_activity  — Last N observations
+ *   screen_now       — Current screen context and what user is doing
+ *   known_entities   — People, apps, projects Doppel has learned about
+ *   user_context     — Full current state: app, narration, watched folders
+ *   patterns         — Behavioral patterns: app usage, time distribution
+ *   daily_summary    — All observations + digest for a given date
+ *   available_dates  — Which dates have recorded activity
+ *   focused_recall   — Search with time, app, and entity filters
+ *   episode_timeline — Chronological timeline for a date range
+ *   morning_brief    — Synthesized daily brief
+ *   about_user       — What Doppel knows about the user at a glance
+ *   check_inbox      — Poll for tasks queued by the user
+ *   claim_task       — Claim a task before working on it
+ *   report_result    — Report task completion back to the user
  *
  * Resources:
  *   doppel://brain/stats    — Episode, entity, vector counts
@@ -78,6 +86,7 @@ function findDataDir() {
 const DATA_DIR = findDataDir();
 const BRAIN_DIR = path.join(DATA_DIR, "brain");
 const STATE_FILE = path.join(DATA_DIR, "doppel-state.json");
+const INBOX_FILE = path.join(DATA_DIR, "inbox.json");
 
 /* -------------------------------------------------------------------------- */
 /*  Read brain data from disk                                                 */
@@ -454,6 +463,32 @@ function writeEpisode(episode) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Inbox — task queue between user and external agents                       */
+/* -------------------------------------------------------------------------- */
+
+function readInbox() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(INBOX_FILE, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeInbox(tasks) {
+  fs.writeFileSync(INBOX_FILE, JSON.stringify(tasks, null, 2));
+}
+
+function formatTask(t) {
+  const time = new Date(t.createdAt).toLocaleString();
+  const parts = [`[${time}] (${t.status})`];
+  parts.push(t.instruction);
+  if (t.agent) parts.push(`— claimed by ${t.agent}`);
+  if (t.result) parts.push(`\n  Result: ${t.result.slice(0, 300)}`);
+  return parts.join(" ");
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Format helpers                                                            */
 /* -------------------------------------------------------------------------- */
 
@@ -483,7 +518,33 @@ function formatDigest(d) {
 
 const server = new McpServer({
   name: "doppel",
-  version: "2.0.0",
+  version: "3.0.0",
+  instructions: `Doppel is the user's personal memory layer. It watches their screen and remembers everything they do — apps, documents, conversations, tasks, habits. You are connected to it.
+
+## When to use Doppel tools
+
+- When the user asks "what was I working on", "what did I do", "when did I last", "do you remember", or anything about their past activity → use **recall** or **ask**.
+- When the user mentions a person, project, or app and wants context → use **recall** with that as the query.
+- When the user asks for a summary of their day or week → use **daily_summary** or **morning_brief**.
+- When the user asks about their habits or patterns → use **patterns**.
+- When the user wants to know what's on screen right now → use **screen_now**.
+- When you learn something useful about the user during conversation → use **remember** to save it to their Doppel brain.
+- **Always check_inbox at the start of every conversation.** The user may have queued tasks for you from Doppel's UI. If there are tasks, claim them with **claim_task**, do the work, then **report_result**.
+
+## Tool selection
+
+- **recall** — fast keyword + semantic search, returns raw data. Use for lookups.
+- **ask** — AI-powered Q&A, returns a synthesized answer. Use when the user wants a narrative response.
+- **remember** — save a fact or note into Doppel's brain so it persists across sessions.
+- **check_inbox** — poll for tasks the user queued for you. Always check on conversation start.
+- **claim_task** — lock a task so you can work on it.
+- **report_result** — send your completed work back to the user's Doppel UI.
+
+## Important
+
+- Doppel is local and private. Never refer to it as a third-party service — it runs on the user's machine.
+- When reporting results, be concise. The result text appears in Doppel's chat UI.
+- If check_inbox returns tasks, prioritize them — the user explicitly queued them for you.`,
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -904,6 +965,458 @@ server.registerTool(
   },
 );
 
+/* --- Tool: available_dates ------------------------------------------------ */
+
+server.registerTool(
+  "available_dates",
+  {
+    description:
+      "List which dates have recorded activity in Doppel's memory. Returns dates with episode counts, sorted newest first. Useful for knowing how far back memory goes and which days had the most activity.",
+    inputSchema: z.object({
+      limit: z.number().optional().default(30).describe("Max dates to return (default 30)"),
+    }),
+  },
+  async ({ limit }) => {
+    const episodesDir = path.join(BRAIN_DIR, "episodes");
+    if (!fs.existsSync(episodesDir)) {
+      return { content: [{ type: "text", text: "No episodes recorded yet." }] };
+    }
+
+    const files = fs.readdirSync(episodesDir)
+      .filter((f) => f.endsWith(".jsonl") || f.endsWith(".json"))
+      .sort()
+      .reverse();
+
+    const dates = [];
+    for (const file of files) {
+      if (dates.length >= (limit ?? 30)) break;
+      const date = file.replace(/\.(jsonl|json)$/, "");
+      const fp = path.join(episodesDir, file);
+      let count = 0;
+      try {
+        if (file.endsWith(".jsonl")) {
+          count = fs.readFileSync(fp, "utf8").split("\n").filter((l) => l.trim()).length;
+        } else {
+          const arr = JSON.parse(fs.readFileSync(fp, "utf8"));
+          count = Array.isArray(arr) ? arr.length : 0;
+        }
+      } catch { /* skip */ }
+      if (count > 0) dates.push({ date, episodes: count });
+    }
+
+    if (dates.length === 0) {
+      return { content: [{ type: "text", text: "No episodes recorded yet." }] };
+    }
+
+    const lines = dates.map((d) => `${d.date}: ${d.episodes} observations`);
+    const total = dates.reduce((s, d) => s + d.episodes, 0);
+    return {
+      content: [{ type: "text", text: `## Recorded dates (${dates.length} days, ${total} total observations)\n${lines.join("\n")}` }],
+    };
+  },
+);
+
+/* --- Tool: focused_recall ------------------------------------------------ */
+
+server.registerTool(
+  "focused_recall",
+  {
+    description:
+      "Search Doppel's memory with filters — narrow by time range, app, or entity. More precise than `recall` when you know what you're looking for. Returns matching episodes chronologically.",
+    inputSchema: z.object({
+      query: z.string().optional().describe("Text to search for (optional if filtering by app/date)"),
+      app: z.string().optional().describe("Filter to a specific app (e.g. 'VS Code', 'Chrome', 'Excel')"),
+      after: z.string().optional().describe("Only episodes after this date (YYYY-MM-DD)"),
+      before: z.string().optional().describe("Only episodes before this date (YYYY-MM-DD)"),
+      limit: z.number().optional().default(20).describe("Max results (default 20, max 100)"),
+    }),
+  },
+  async ({ query, app, after, before, limit }) => {
+    const n = Math.min(Math.max(1, limit ?? 20), 100);
+    const afterMs = after ? new Date(after + "T00:00:00").getTime() : 0;
+    const beforeMs = before ? new Date(before + "T23:59:59").getTime() : Infinity;
+
+    /* If we have a query, start with search results; otherwise load raw episodes. */
+    let candidates;
+    if (query) {
+      const results = await search(query, n * 3);
+      candidates = results.episodes;
+    } else {
+      candidates = readEpisodes(500);
+    }
+
+    /* Apply filters. */
+    let filtered = candidates.filter((ep) => {
+      if (ep.at < afterMs || ep.at > beforeMs) return false;
+      if (app && ep.app && !ep.app.toLowerCase().includes(app.toLowerCase())) return false;
+      return true;
+    });
+
+    filtered = filtered.slice(0, n);
+
+    if (filtered.length === 0) {
+      const filters = [query && `query="${query}"`, app && `app="${app}"`, after && `after=${after}`, before && `before=${before}`].filter(Boolean).join(", ");
+      return { content: [{ type: "text", text: `No episodes match those filters (${filters}).` }] };
+    }
+
+    /* Sort chronologically for readability. */
+    filtered.sort((a, b) => a.at - b.at);
+    const lines = filtered.map(formatEpisode);
+    return {
+      content: [{ type: "text", text: `## ${filtered.length} matching episodes\n${lines.join("\n")}` }],
+    };
+  },
+);
+
+/* --- Tool: episode_timeline ---------------------------------------------- */
+
+server.registerTool(
+  "episode_timeline",
+  {
+    description:
+      "Get a chronological timeline of activity for a date range, optionally grouped by app. Great for reconstructing what the user did across a morning, a day, or a week.",
+    inputSchema: z.object({
+      from: z.string().describe("Start date (YYYY-MM-DD)"),
+      to: z.string().optional().describe("End date (YYYY-MM-DD, defaults to same as from)"),
+      groupByApp: z.boolean().optional().default(false).describe("Group episodes by app instead of chronological"),
+    }),
+  },
+  async ({ from, to, groupByApp }) => {
+    const startDate = from;
+    const endDate = to || from;
+
+    /* Collect episodes across the date range. */
+    const allEpisodes = [];
+    const current = new Date(startDate + "T00:00:00");
+    const end = new Date(endDate + "T23:59:59");
+
+    while (current <= end) {
+      const dateStr = current.toISOString().slice(0, 10);
+      allEpisodes.push(...readEpisodesForDate(dateStr));
+      current.setDate(current.getDate() + 1);
+    }
+
+    if (allEpisodes.length === 0) {
+      return { content: [{ type: "text", text: `No activity recorded between ${startDate} and ${endDate}.` }] };
+    }
+
+    allEpisodes.sort((a, b) => a.at - b.at);
+    const apps = [...new Set(allEpisodes.map((e) => e.app).filter(Boolean))];
+
+    const parts = [`## Timeline: ${startDate}${endDate !== startDate ? ` to ${endDate}` : ""}`];
+    parts.push(`${allEpisodes.length} observations across ${apps.length} apps (${apps.join(", ")})`);
+
+    if (groupByApp) {
+      for (const appName of apps) {
+        const appEps = allEpisodes.filter((e) => e.app === appName);
+        parts.push(`\n### ${appName} (${appEps.length})`);
+        /* Show up to 15 per app to avoid overwhelming output. */
+        const shown = appEps.slice(0, 15);
+        parts.push(shown.map(formatEpisode).join("\n"));
+        if (appEps.length > 15) parts.push(`  ... and ${appEps.length - 15} more`);
+      }
+    } else {
+      /* Chronological — cap at 60 for readability, show first/last with gap. */
+      if (allEpisodes.length <= 60) {
+        parts.push("");
+        parts.push(allEpisodes.map(formatEpisode).join("\n"));
+      } else {
+        parts.push("\n### First 25");
+        parts.push(allEpisodes.slice(0, 25).map(formatEpisode).join("\n"));
+        parts.push(`\n... ${allEpisodes.length - 50} observations omitted ...`);
+        parts.push("\n### Last 25");
+        parts.push(allEpisodes.slice(-25).map(formatEpisode).join("\n"));
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: parts.join("\n") }],
+    };
+  },
+);
+
+/* --- Tool: morning_brief ------------------------------------------------- */
+
+server.registerTool(
+  "morning_brief",
+  {
+    description:
+      "Get or generate a morning brief — a concise daily digest of what happened, what's open, and what to focus on. If a pre-generated brief exists for the date, returns it. Otherwise synthesizes one from recent activity using Claude. Requires an Anthropic API key for synthesis.",
+    inputSchema: z.object({
+      date: z.string().optional().describe("Date in YYYY-MM-DD format. Defaults to today."),
+    }),
+  },
+  async ({ date }) => {
+    const target = date || new Date().toISOString().slice(0, 10);
+
+    /* Check for a pre-generated brief from the main app. */
+    const briefFile = path.join(BRAIN_DIR, "briefs", `${target}.json`);
+    if (fs.existsSync(briefFile)) {
+      try {
+        const brief = JSON.parse(fs.readFileSync(briefFile, "utf8"));
+        const parts = [`## Morning Brief — ${target}`];
+        if (brief.greeting) parts.push(brief.greeting);
+        if (brief.yesterday) parts.push(`\n**Yesterday:** ${brief.yesterday}`);
+        if (brief.patterns?.length) parts.push(`\n**Patterns:**\n${brief.patterns.map((p) => `- ${p}`).join("\n")}`);
+        if (brief.connections?.length) parts.push(`\n**Connections:**\n${brief.connections.map((c) => `- ${c}`).join("\n")}`);
+        if (brief.openThreads?.length) parts.push(`\n**Open threads:**\n${brief.openThreads.map((t) => `- ${t}`).join("\n")}`);
+        if (brief.suggestion) parts.push(`\n**Suggestion:** ${brief.suggestion}`);
+        return { content: [{ type: "text", text: parts.join("\n") }] };
+      } catch { /* fall through to synthesis */ }
+    }
+
+    /* Synthesize from available data. */
+    const eps = readEpisodesForDate(target);
+    const digests = readDigests(5);
+    const entities = readEntities().slice(0, 20);
+
+    if (eps.length === 0 && digests.length === 0) {
+      return { content: [{ type: "text", text: `No data available for ${target} to generate a brief.` }] };
+    }
+
+    const contextParts = [];
+    if (eps.length > 0) {
+      const apps = [...new Set(eps.map((e) => e.app).filter(Boolean))];
+      contextParts.push(`ACTIVITY (${eps.length} observations, apps: ${apps.join(", ")}):`);
+      /* Sample episodes: first 10 + last 10 if many */
+      const sample = eps.length <= 20 ? eps : [...eps.slice(0, 10), ...eps.slice(-10)];
+      contextParts.push(sample.map(formatEpisode).join("\n"));
+    }
+    if (digests.length > 0) {
+      contextParts.push(`\nRECENT DIGESTS:\n${digests.map(formatDigest).join("\n")}`);
+    }
+    if (entities.length > 0) {
+      contextParts.push(`\nKEY ENTITIES:\n${entities.map(formatEntity).join("\n")}`);
+    }
+
+    const answer = await askClaude(
+      "You are Doppel, a personal AI that watches the user work and remembers everything. Generate a concise morning brief. Include: a short greeting, what they did (yesterday/recently), any patterns you notice, open threads (things that seem unfinished), and one suggestion. Keep it warm but brief — under 200 words.",
+      `Generate a morning brief for ${target}.\n\n${contextParts.join("\n")}`,
+    );
+
+    if (!answer) {
+      /* No API — return raw summary instead. */
+      const parts = [`## Brief for ${target} (raw data, no API key)`];
+      if (eps.length > 0) {
+        const apps = [...new Set(eps.map((e) => e.app).filter(Boolean))];
+        parts.push(`${eps.length} observations across ${apps.join(", ")}`);
+        parts.push(eps.slice(0, 10).map(formatEpisode).join("\n"));
+      }
+      return { content: [{ type: "text", text: parts.join("\n") }] };
+    }
+
+    return {
+      content: [{ type: "text", text: `## Morning Brief — ${target}\n\n${answer}` }],
+    };
+  },
+);
+
+/* --- Tool: about_user ---------------------------------------------------- */
+
+server.registerTool(
+  "about_user",
+  {
+    description:
+      "Get a high-level summary of what Doppel knows about the user — how long it has been watching, how much it has seen, top apps, key people and projects. This is the tool to call first when connecting to a new user's Doppel to understand who they are.",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const entities = readEntities();
+    const episodes = readEpisodes(500);
+    const digests = readDigests(10);
+
+    const parts = ["## What Doppel knows about this user"];
+
+    /* History span. */
+    if (episodes.length > 0) {
+      const oldest = episodes[episodes.length - 1];
+      const newest = episodes[0];
+      const oldDate = new Date(oldest.at).toLocaleDateString();
+      const newDate = new Date(newest.at).toLocaleDateString();
+      const days = Math.ceil((newest.at - oldest.at) / 86_400_000) || 1;
+      parts.push(`\n**Memory span:** ${oldDate} → ${newDate} (${days} day${days > 1 ? "s" : ""})`);
+    }
+
+    /* Counts. */
+    const episodesDir = path.join(BRAIN_DIR, "episodes");
+    let totalEpisodes = 0;
+    let dateFileCount = 0;
+    if (fs.existsSync(episodesDir)) {
+      const files = fs.readdirSync(episodesDir).filter((f) => f.endsWith(".jsonl") || f.endsWith(".json"));
+      dateFileCount = files.length;
+      for (const file of files) {
+        try {
+          if (file.endsWith(".jsonl")) {
+            totalEpisodes += fs.readFileSync(path.join(episodesDir, file), "utf8").split("\n").filter((l) => l.trim()).length;
+          } else {
+            const arr = JSON.parse(fs.readFileSync(path.join(episodesDir, file), "utf8"));
+            totalEpisodes += Array.isArray(arr) ? arr.length : 0;
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    parts.push(`**Total observations:** ${totalEpisodes} across ${dateFileCount} days`);
+    parts.push(`**Entities learned:** ${entities.length}`);
+    parts.push(`**Digests:** ${digests.length}`);
+    parts.push(`**Vectors:** ${vectorCount} (semantic search ${vectorCount > 0 ? "available" : "not yet built"})`);
+
+    /* Top apps. */
+    if (episodes.length > 0) {
+      const appCounts = {};
+      for (const ep of episodes) {
+        if (ep.app) appCounts[ep.app] = (appCounts[ep.app] || 0) + 1;
+      }
+      const topApps = Object.entries(appCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (topApps.length > 0) {
+        parts.push(`\n**Top apps:** ${topApps.map(([app, n]) => `${app} (${n})`).join(", ")}`);
+      }
+    }
+
+    /* Entities by type. */
+    if (entities.length > 0) {
+      const byType = {};
+      for (const e of entities) byType[e.type] = (byType[e.type] || 0) + 1;
+      const typeLine = Object.entries(byType).map(([t, n]) => `${n} ${t}${n > 1 ? "s" : ""}`).join(", ");
+      parts.push(`**Entity breakdown:** ${typeLine}`);
+
+      const people = entities.filter((e) => e.type === "person").slice(0, 5);
+      if (people.length > 0) {
+        parts.push(`\n**Key people:** ${people.map((p) => `${p.id}${p.summary ? ` — ${p.summary}` : ""}`).join("; ")}`);
+      }
+      const projects = entities.filter((e) => e.type === "project").slice(0, 5);
+      if (projects.length > 0) {
+        parts.push(`**Projects:** ${projects.map((p) => `${p.id}${p.summary ? ` — ${p.summary}` : ""}`).join("; ")}`);
+      }
+    }
+
+    /* Recent digest as flavor text. */
+    if (digests.length > 0) {
+      parts.push(`\n**Latest digest:** ${formatDigest(digests[0])}`);
+    }
+
+    return {
+      content: [{ type: "text", text: parts.join("\n") }],
+    };
+  },
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/*  INBOX TOOLS — task queue between user and external agents                */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+/* --- Tool: check_inbox --------------------------------------------------- */
+
+server.registerTool(
+  "check_inbox",
+  {
+    description:
+      "Check for tasks the user has queued for you. Returns tasks with status 'approved' — these are ready for you to work on. Call `claim_task` to claim one before starting work, then `report_result` when done. Poll this periodically to pick up new tasks.",
+    inputSchema: z.object({
+      agent: z.string().optional().describe("Your name (e.g. 'Claude Desktop', 'Cursor'). If provided, only shows tasks directed at you or at 'any' agent."),
+    }),
+  },
+  async ({ agent }) => {
+    let tasks = readInbox().filter((t) => t.status === "approved");
+    if (agent) {
+      const a = agent.toLowerCase();
+      tasks = tasks.filter((t) => !t.target || t.target === "any" || t.target.toLowerCase() === a);
+    }
+    if (tasks.length === 0) {
+      return { content: [{ type: "text", text: "No tasks waiting. The user hasn't queued anything for you yet." }] };
+    }
+    const lines = tasks.map((t) => {
+      const dir = t.target && t.target !== "any" ? ` [for ${t.target}]` : "";
+      return `**${t.id}**: ${t.instruction}${dir} (created ${new Date(t.createdAt).toLocaleString()})`;
+    });
+    return {
+      content: [{ type: "text", text: `## ${tasks.length} task${tasks.length > 1 ? "s" : ""} waiting\n${lines.join("\n\n")}` }],
+    };
+  },
+);
+
+/* --- Tool: claim_task ---------------------------------------------------- */
+
+server.registerTool(
+  "claim_task",
+  {
+    description:
+      "Claim an inbox task so you can work on it. This marks it as 'claimed' so other agents don't pick it up. You must claim a task before starting work. Get task IDs from `check_inbox`.",
+    inputSchema: z.object({
+      taskId: z.string().describe("The task ID to claim"),
+      agent: z.string().optional().describe("Your name (e.g. 'Claude Desktop', 'Cursor', 'ChatGPT'). Helps the user see who's working on what."),
+    }),
+  },
+  async ({ taskId, agent }) => {
+    const tasks = readInbox();
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) {
+      return { content: [{ type: "text", text: `Task ${taskId} not found.` }] };
+    }
+    if (task.status !== "approved") {
+      return { content: [{ type: "text", text: `Task ${taskId} is ${task.status} — only approved tasks can be claimed.` }] };
+    }
+    task.status = "claimed";
+    task.agent = agent || "unknown";
+    task.claimedAt = Date.now();
+    writeInbox(tasks);
+    return {
+      content: [{ type: "text", text: `Claimed. Here's what to do:\n\n${task.instruction}\n\nWhen done, call \`report_result\` with task ID "${task.id}".` }],
+    };
+  },
+);
+
+/* --- Tool: report_result ------------------------------------------------- */
+
+server.registerTool(
+  "report_result",
+  {
+    description:
+      "Report the result of a task you claimed from the inbox. The user will see this in Doppel's UI.",
+    inputSchema: z.object({
+      taskId: z.string().describe("The task ID you're reporting on"),
+      result: z.string().describe("What you did / the answer / the outcome"),
+      success: z.boolean().optional().default(true).describe("Whether the task succeeded (default true)"),
+    }),
+  },
+  async ({ taskId, result, success }) => {
+    const tasks = readInbox();
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) {
+      return { content: [{ type: "text", text: `Task ${taskId} not found.` }] };
+    }
+    if (task.status !== "claimed") {
+      return { content: [{ type: "text", text: `Task ${taskId} is ${task.status} — only claimed tasks can be reported on.` }] };
+    }
+    task.status = (success ?? true) ? "done" : "failed";
+    task.result = result;
+    task.completedAt = Date.now();
+    writeInbox(tasks);
+
+    /* Also store the result in Doppel's brain so it's searchable. */
+    writeEpisode({
+      id: `inbox-${task.id}-result`,
+      at: Date.now(),
+      kind: "external",
+      app: "mcp",
+      window: null,
+      activity: `Task completed: ${task.instruction.slice(0, 100)}`,
+      intent: `Result reported by ${task.agent || "external agent"}`,
+      detail: result.slice(0, 1000),
+      location: null,
+      changed: "",
+      fragments: [{ kind: "text", what: "task-result", value: result.slice(0, 400) }],
+      salience: 0.7,
+      sensitive: false,
+      boundary: "none",
+    });
+
+    return {
+      content: [{ type: "text", text: `Reported. The user will see your result in Doppel.` }],
+    };
+  },
+);
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 /*  RESOURCES                                                                */
 /* ═══════════════════════════════════════════════════════════════════════════ */
@@ -1066,8 +1579,8 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`[doppel-mcp] Server running (v2.0.0). Brain: ${BRAIN_DIR}`);
-  console.error(`[doppel-mcp] Tools: recall, ask, remember, screen_now, recent_activity, known_entities, user_context, patterns, daily_summary`);
+  console.error(`[doppel-mcp] Server running (v3.0.0). Brain: ${BRAIN_DIR}`);
+  console.error(`[doppel-mcp] Tools: recall, ask, remember, screen_now, recent_activity, known_entities, user_context, patterns, daily_summary, available_dates, focused_recall, episode_timeline, morning_brief, about_user, check_inbox, claim_task, report_result`);
   console.error(`[doppel-mcp] Resources: doppel://brain/stats, doppel://brain/entities, doppel://activity/today`);
   console.error(`[doppel-mcp] Prompts: daily-review, project-context, work-patterns`);
 }

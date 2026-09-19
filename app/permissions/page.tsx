@@ -171,11 +171,6 @@ export default function PermissionsPage() {
       {/* ------------------------------------------------- biometric lock */}
       <BiometricPanel />
 
-      {/* ------------------------------------------------- integrations */}
-      <section className="mb-14">
-        <McpConnectPanel />
-      </section>
-
       {/* -------------------------------------------------------- display */}
       {permissions.screen && (
         <section className="mb-14">
@@ -533,82 +528,6 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div>
       <p style={{ fontSize: "var(--text-title)", fontWeight: 600, color: "var(--ink)" }}>{value}</p>
       <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 2 }}>{label}</p>
-    </div>
-  );
-}
-
-function McpConnectPanel() {
-  const [status, setStatus] = useState<"checking" | "connected" | "disconnected">("checking");
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    window.doppel?.mcpCheckClaude?.().then((r) => {
-      setStatus(r?.connected ? "connected" : "disconnected");
-    }).catch(() => setStatus("disconnected"));
-  }, []);
-
-  const connect = async () => {
-    setBusy(true);
-    const result = await window.doppel?.mcpConnectClaude?.();
-    setBusy(false);
-    if (result?.ok) setStatus("connected");
-  };
-
-  return (
-    <div className={status === "connected" ? "raised" : "flat"} style={{ padding: 28 }}>
-      <div className="flex flex-wrap items-start justify-between gap-6">
-        <div className="min-w-0 flex-1">
-          <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
-            Integrations
-          </p>
-          <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
-            Let other AI tools access Doppel's memory. Any app that supports MCP can recall what
-            you've been doing, your patterns, and your context.
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-5 flex flex-wrap items-center gap-4">
-        <div
-          className={status === "connected" ? "pressed" : "flat"}
-          style={{ padding: "14px 20px", flex: 1, minWidth: 200 }}
-        >
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span
-                className="block shrink-0 rounded-full"
-                style={{
-                  width: 8,
-                  height: 8,
-                  background: status === "connected" ? "var(--primary)" : "var(--slate)",
-                  boxShadow: status === "connected" ? "0 0 8px var(--primary-glow)" : "none",
-                  transition: "all 0.3s ease",
-                }}
-              />
-              <div>
-                <p style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>Claude Desktop</p>
-                <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 2 }}>
-                  {status === "checking"
-                    ? "Checking..."
-                    : status === "connected"
-                      ? "Connected — restart Claude Desktop to activate"
-                      : "Not connected"}
-                </p>
-              </div>
-            </div>
-            {status !== "checking" && (
-              <Button
-                variant={status === "connected" ? "ghost" : "primary"}
-                size="sm"
-                onClick={connect}
-                disabled={busy}
-              >
-                {busy ? "Connecting..." : status === "connected" ? "Reconnect" : "Connect"}
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

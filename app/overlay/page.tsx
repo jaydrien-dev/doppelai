@@ -6,15 +6,9 @@ import { useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { Mascot } from "@/components/Mascot";
 
-/**
- * Doppel's presence on the desktop.
- *
- * A small window that sits above everything in the corner. Two interactions:
- *   Left-click  → toggle screen watching on/off
- *   Right-click → show Doppel's most recent thought
- *
- * Everything else lives in the system tray menu.
- */
+const smooth = { type: "spring", stiffness: 300, damping: 28, mass: 0.8 } as const;
+const fade = { duration: 0.35, ease: [0.22, 0.61, 0.36, 1] } as const;
+
 export default function OverlayPage() {
   const connect = useDoppel((s) => s.connect);
   const connected = useDoppel((s) => s.connected);
@@ -23,9 +17,7 @@ export default function OverlayPage() {
   const configured = useDoppel((s) => s.ai.configured);
   const narration = useDoppel((s) => s.narration);
   const nudges = useDoppel((s) => s.nudges);
-  const agents = useDoppel((s) => s.agents);
   const updateStatus = useDoppel((s) => s.updateStatus);
-  const agent = agents.find((t) => t.status === "parked") ?? agents.find((t) => t.status === "running") ?? null;
 
   const [hovered, setHovered] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
@@ -41,16 +33,11 @@ export default function OverlayPage() {
 
   const realWatching = connected && screenOn && !paused && configured;
   const watching = optimistic !== null ? optimistic : realWatching;
-  const busy = agents.some((t) => ["running", "parked"].includes(t.status));
 
-  /* Clear the optimistic override once real state catches up. */
   useEffect(() => {
     if (optimistic !== null && realWatching === optimistic) setOptimistic(null);
   }, [realWatching, optimistic]);
 
-  /* Flash the status label briefly on new narration. The bubble text is
-     only set for high-salience observations — routine low-value looks
-     don't hijack the icon click. */
   useEffect(() => {
     const latest = narration[0];
     if (!latest) return;
@@ -63,7 +50,6 @@ export default function OverlayPage() {
     return () => clearTimeout(t);
   }, [narration]);
 
-  /* Nudges always show — they're inherently worth interrupting for. */
   useEffect(() => {
     if (nudges.length > 0) {
       setBubbleText(nudges[0].text);
@@ -76,7 +62,6 @@ export default function OverlayPage() {
       window.doppel?.overlayOpen("/mind/");
       return;
     }
-    /* Left-click toggles screen watching on/off. */
     setOptimistic(!watching);
     window.doppel?.overlayToggleWatch();
   };
@@ -85,11 +70,7 @@ export default function OverlayPage() {
 
   const label = !configured
     ? voice.overlay.needsKey
-    : busy
-      ? agent?.status === "parked"
-        ? voice.overlay.needsYou
-        : voice.overlay.working
-      : (flash ?? (watching ? voice.overlay.watching : voice.overlay.notWatching));
+    : (flash ?? (watching ? voice.overlay.watching : voice.overlay.notWatching));
 
   return (
     <div
@@ -97,7 +78,11 @@ export default function OverlayPage() {
       style={{ background: "transparent", WebkitAppRegion: "drag" } as React.CSSProperties}
       onContextMenu={(e) => {
         e.preventDefault();
-        /* Right-click shows Doppel's most recent thought. */
+        if (bubbleOpen) {
+          setBubbleOpen(false);
+          setBubbleText(null);
+          return;
+        }
         const latest = narration[0];
         if (latest?.text) {
           setBubbleText(latest.text);
@@ -108,14 +93,14 @@ export default function OverlayPage() {
         }
       }}
     >
-      {/* Speech bubble — slides in above the icon when clicked */}
+      {/* Speech bubble */}
       <AnimatePresence>
         {bubbleOpen && bubbleText && (
           <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.92 }}
+            initial={{ opacity: 0, y: 12, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.92 }}
-            transition={{ duration: 0.2, ease: [0.22, 0.61, 0.36, 1] }}
+            exit={{ opacity: 0, y: 12, scale: 0.9 }}
+            transition={smooth}
             onClick={() => { setBubbleOpen(false); setBubbleText(null); }}
             style={{
               maxWidth: 220,
@@ -139,12 +124,14 @@ export default function OverlayPage() {
         )}
       </AnimatePresence>
 
-      <button
+      <motion.button
         onClick={toggle}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         title={watching ? "Stop watching" : "Start watching"}
         aria-label={watching ? "Stop watching" : "Start watching"}
+        animate={{ scale: hovered ? 1.08 : 1 }}
+        transition={smooth}
         className="relative grid cursor-pointer place-items-center rounded-full"
         style={
           {
@@ -152,57 +139,49 @@ export default function OverlayPage() {
             height: 68,
             background: "transparent",
             WebkitAppRegion: "no-drag",
-            transition: "transform var(--dur-press) var(--ease-calm)",
-            transform: hovered ? "scale(1.06)" : "scale(1)",
           } as React.CSSProperties
         }
       >
-        {/* the glow behind it — pulses when Doppel has something to say */}
-        <span
+        <motion.span
           aria-hidden
           className="absolute inset-0 rounded-full"
+          animate={{
+            opacity: hasSomething ? 1 : watching ? 0.7 : 0.3,
+          }}
+          transition={{ duration: 0.6, ease: "easeInOut" }}
           style={{
-            background: hasSomething
+            background: hasSomething || watching
               ? "radial-gradient(circle, var(--primary-glow) 0%, transparent 70%)"
-              : watching
-                ? "radial-gradient(circle, var(--primary-glow) 0%, transparent 70%)"
-                : "radial-gradient(circle, var(--slate-glow) 0%, transparent 70%)",
+              : "radial-gradient(circle, var(--slate-glow) 0%, transparent 70%)",
             animation: watching || hasSomething ? "doppel-breathe var(--pulse-cycle) var(--ease-calm) infinite" : "none",
-            opacity: hasSomething ? 1 : watching ? undefined : 0.4,
           }}
         />
         <Mascot
-          mood={
-            !configured || !watching
-              ? "paused"
-              : agent?.status === "parked"
-                ? "unsure"
-                : busy
-                  ? "working"
-                  : "watching"
-          }
+          mood={!configured || !watching ? "paused" : "watching"}
           size="md"
         />
-      </button>
+      </motion.button>
 
       <AnimatePresence mode="wait">
         <motion.span
           key={label}
-          initial={{ opacity: 0, y: 3 }}
-          animate={{ opacity: hovered || flash || busy ? 1 : 0.55, y: 0 }}
-          exit={{ opacity: 0, y: -3 }}
-          transition={{ duration: 0.25, ease: [0.22, 0.61, 0.36, 1] }}
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: hovered || flash ? 1 : 0.55, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={fade}
           className="micro-label mt-1 whitespace-nowrap"
           style={{
-            color: watching || busy || hasSomething ? "var(--primary)" : "var(--slate)",
+            color: watching || hasSomething ? "var(--primary)" : "var(--slate)",
             fontSize: 9,
             letterSpacing: "0.06em",
             textShadow: "0 1px 3px var(--shadow-light)",
           }}
         >
           {hasSomething && (
-            <span
+            <motion.span
               aria-hidden
+              animate={{ scale: [1, 1.3, 1] }}
+              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
               style={{
                 display: "inline-block",
                 width: 5,
@@ -210,7 +189,6 @@ export default function OverlayPage() {
                 borderRadius: "50%",
                 background: "var(--primary)",
                 marginRight: 4,
-                animation: "doppel-breathe var(--pulse-cycle) var(--ease-calm) infinite",
               }}
             />
           )}
@@ -218,14 +196,14 @@ export default function OverlayPage() {
         </motion.span>
       </AnimatePresence>
 
-      {/* Update progress — shown while downloading or ready to install */}
+      {/* Update progress */}
       <AnimatePresence>
         {(updateStatus.state === "downloading" || updateStatus.state === "ready") && (
           <motion.div
-            initial={{ opacity: 0, y: 4 }}
+            initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: 0.25 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={smooth}
             onClick={() => {
               if (updateStatus.state === "ready") window.doppel?.installUpdate();
             }}
@@ -247,9 +225,8 @@ export default function OverlayPage() {
                   }}
                 >
                   <motion.div
-                    initial={{ width: 0 }}
                     animate={{ width: `${updateStatus.progress ?? 0}%` }}
-                    transition={{ duration: 0.3 }}
+                    transition={{ duration: 0.5, ease: "easeOut" }}
                     style={{
                       height: "100%",
                       borderRadius: 2,
@@ -272,18 +249,19 @@ export default function OverlayPage() {
               </>
             )}
             {updateStatus.state === "ready" && (
-              <span
+              <motion.span
+                animate={{ opacity: [0.5, 1, 0.5] }}
+                transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
                 style={{
                   display: "block",
                   textAlign: "center",
                   fontSize: 8,
                   color: "var(--primary)",
                   letterSpacing: "0.04em",
-                  animation: "doppel-breathe var(--pulse-cycle) var(--ease-calm) infinite",
                 }}
               >
                 restart to update
-              </span>
+              </motion.span>
             )}
           </motion.div>
         )}

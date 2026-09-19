@@ -2,7 +2,6 @@ const { randomUUID } = require("node:crypto");
 
 const brain = require("./brain");
 const claude = require("./claude");
-let routinesModule = null;
 
 /**
  * The nudge system — the piece that makes Doppel proactive.
@@ -44,8 +43,6 @@ let lastWindow = null;
 
 function init(publisher) {
   publish = publisher ?? (() => {});
-  /* Lazy-load routines to avoid circular dependency. */
-  routinesModule = require("./routines");
 }
 
 /* ------------------------------------------------------------- evaluation */
@@ -78,8 +75,7 @@ async function evaluate(episode, narration) {
     checkTaskEnd(episode, now) ??
     checkStuck(episode, now) ??
     (await checkMemory(episode, now)) ??
-    checkOpenThreads(episode, now) ??
-    checkRoutineProposal(episode, now);
+    checkOpenThreads(episode, now);
 
   if (!nudge) return;
 
@@ -187,37 +183,6 @@ function checkOpenThreads(episode, now) {
     }
   }
   return null;
-}
-
-/**
- * Surface a nudge when Doppel has detected a routine-worthy pattern.
- *
- * Only fires when the current app matches a pattern that has proposals
- * available (not already accepted or rejected). This is the bridge between
- * pattern detection and the user choosing to automate.
- */
-function checkRoutineProposal(episode, now) {
-  if (!routinesModule) return null;
-  if (!allowed("offer", now)) return null;
-  if (!episode.app) return null;
-
-  try {
-    const props = routinesModule.proposals();
-    const matching = props.find(
-      (p) => p.sourceApp === episode.app && p.count >= 4,
-    );
-    if (!matching) return null;
-
-    return make("offer", {
-      text: `I've seen you "${matching.title}" ${matching.count} times. Want me to handle it automatically?`,
-      detail: matching.instruction,
-      action: "Tell me more",
-      episodeId: episode.id,
-      at: now,
-    });
-  } catch {
-    return null;
-  }
 }
 
 /* ------------------------------------------------------------ management */

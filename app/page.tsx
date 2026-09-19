@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
-import type { AgentRun, Nudge, BrainPattern } from "@/lib/store";
+import type { InboxTask, Nudge } from "@/lib/store";
 import { voice } from "@/lib/voice";
-import { minutesSince, ago, formatDuration } from "@/lib/time";
+import { minutesSince, ago } from "@/lib/time";
 import { appLabel, currentApp, describeEvent } from "@/lib/events";
 import { Pulse } from "@/components/Pulse";
 import { Mascot } from "@/components/Mascot";
@@ -26,6 +26,7 @@ export default function DenPage() {
   const ai = useDoppel((s) => s.ai);
   const permissions = useDoppel((s) => s.permissions);
   const nudges = useDoppel((s) => s.nudges);
+  const inbox = useDoppel((s) => s.inbox);
   const stats = useDoppel((s) => s.stats);
   const now = useDoppel((s) => s.now);
 
@@ -97,27 +98,14 @@ export default function DenPage() {
         <ResumeButton lastApp={seen.app} lastText={seen.text} />
       )}
 
-      {/* --------------------------------------------------------- agent task */}
-      <AgentTask />
-
       {/* ----------------------------------------------------------- nudges */}
       {nudges.length > 0 && <NudgeCards nudges={nudges} />}
 
+      {/* ----------------------------------------------------------- inbox */}
+      {connected && ai.configured && <InboxSection tasks={inbox} />}
+
       {/* ----------------------------------------------- setup prompts -------- */}
       {needsSetup && <SetupPrompts />}
-
-      {/* --------------------------------------------- suggested actions ------ */}
-      {connected && ai.configured && stats.eventsSeen < 20 && (
-        <SuggestedActions />
-      )}
-
-      {/* ------------------------------------------------------------ patterns */}
-      {connected && ai.configured && stats.eventsSeen > 10 && (
-        <PatternCards />
-      )}
-
-      {/* ---------------------------------------------------------- history */}
-      <AgentHistory />
 
       {/* ---------------------------------------------------------- daily recap */}
       {connected && ai.configured && stats.eventsSeen > 10 && (
@@ -725,331 +713,240 @@ function SetupPrompts() {
 }
 
 /* ===========================================================================
-   Suggested Actions — one-click prompts for non-technical users
+   Inbox — task queue for external AI agents
    =========================================================================== */
 
-function SuggestedActions() {
-  const handleSuggestion = (instruction: string) => {
-    doppel.runAgent({ instruction });
+function InboxSection({ tasks }: { tasks: InboxTask[] }) {
+  const now = useDoppel((s) => s.now);
+  const [draft, setDraft] = useState("");
+  const [expanded, setExpanded] = useState(false);
+
+  const active = tasks.filter((t) => t.status !== "done" && t.status !== "rejected");
+  const completed = tasks.filter((t) => t.status === "done");
+  const visible = expanded ? tasks : active;
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    await doppel.inboxCreate(text, true);
+  };
+
+  const statusColor = (s: string) => {
+    switch (s) {
+      case "pending": return "var(--slate)";
+      case "approved": return "var(--primary)";
+      case "claimed": return "#e89b00";
+      case "done": return "#3a3";
+      case "failed": return "#e55";
+      case "rejected": return "var(--slate)";
+      default: return "var(--slate)";
+    }
+  };
+
+  const statusLabel = (s: string) => {
+    switch (s) {
+      case "pending": return "Waiting for approval";
+      case "approved": return "Queued for agent";
+      case "claimed": return "Agent working...";
+      case "done": return "Done";
+      case "failed": return "Failed";
+      case "rejected": return "Rejected";
+      default: return s;
+    }
   };
 
   return (
-    <section className="mb-14">
-      <SectionHeading>{voice.suggestions.title}</SectionHeading>
-      <div className="mt-5 flex flex-wrap gap-3">
-        {voice.suggestions.items.map((item) => (
-          <button
-            key={item.label}
-            onClick={() => handleSuggestion(item.instruction)}
-            className="pressable cursor-pointer"
-            style={{
-              padding: "12px 20px",
-              borderRadius: "var(--radius-card-sm)",
-              background: "var(--surface)",
-              boxShadow: "var(--elev-raised-sm)",
-              fontSize: "var(--text-sm)",
-              fontWeight: 500,
-              color: "var(--ink)",
-              border: "none",
-              transition: "all 0.15s ease",
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-/* ===========================================================================
-   Agent Task — read-only view of current or most recent task
-   =========================================================================== */
-
-function AgentTask() {
-  const agents = useDoppel((s) => s.agents);
-
-  if (agents.length === 0) return null;
-
-  return (
     <section className="mb-12">
-      <AnimatePresence>
-        {agents.map((task) => (
+      <SectionHeading>
+        <span className="flex items-center gap-3">
+          Inbox
+          {active.length > 0 && (
+            <span
+              style={{
+                fontSize: "var(--text-xs, 11px)",
+                background: "var(--primary)",
+                color: "white",
+                borderRadius: 10,
+                padding: "2px 8px",
+                fontWeight: 600,
+              }}
+            >
+              {active.length}
+            </span>
+          )}
+        </span>
+      </SectionHeading>
+      <p
+        className="mb-5 -mt-2"
+        style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}
+      >
+        Send tasks to your connected AI agents. They&apos;ll pick them up via MCP.
+      </p>
+
+      {/* Compose */}
+      <div className="mb-5 flex items-center gap-3">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && draft.trim() && send()}
+          placeholder="What should the agent do?"
+          className="min-w-0 flex-1"
+          style={{
+            padding: "12px 16px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--bg-base)",
+            boxShadow: "var(--elev-pressed-sm)",
+            fontSize: "var(--text-sm)",
+            color: "var(--ink)",
+          }}
+        />
+        <Button variant="primary" onClick={send} disabled={!draft.trim()}>
+          Send
+        </Button>
+      </div>
+
+      {/* Task list */}
+      <AnimatePresence initial={false}>
+        {visible.map((task) => (
           <motion.div
             key={task.id}
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.34, ease: [0.22, 0.61, 0.36, 1] }}
-            className="mb-3 overflow-hidden"
+            layout
+            initial={{ opacity: 0, y: -6, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: -6, height: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 0.61, 0.36, 1] }}
+            className="overflow-hidden"
           >
-            <div className="raised" style={{ padding: 24 }}>
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <Mascot mood="working" size="sm" />
-                  <p style={{ fontWeight: 600, letterSpacing: "var(--tracking-tight)" }}>
-                    {task.title}
+            <div
+              className="raised mb-3"
+              style={{
+                padding: "16px 20px",
+                borderLeft: `3px solid ${statusColor(task.status)}`,
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>
+                    {task.instruction}
                   </p>
-                </div>
-                <span className="flex items-center gap-3">
-                  {task.status === "running" && <Pulse size={28} className="-m-1" />}
-                  <span className="micro-label">
-                    {task.mode === "background" ? "background · " : "screen · "}
-                    {task.status === "running"
-                      ? voice.agent.running(task.step)
-                      : task.status === "parked"
-                        ? "waiting on you"
-                        : task.status}
-                  </span>
-                  {task.status === "running" && (
-                    <button
-                      onClick={() => doppel.abortAgent(task.id)}
-                      className="cursor-pointer micro-label"
-                      style={{ color: "var(--slate)" }}
+                  <div className="mt-2 flex items-center gap-3">
+                    <span
+                      style={{
+                        fontSize: "var(--text-xs, 11px)",
+                        color: statusColor(task.status),
+                        fontWeight: 600,
+                      }}
                     >
-                      stop
-                    </button>
-                  )}
-                </span>
-              </div>
-
-              {task.narration.length > 0 && (
-                <ul className="mt-5 flex flex-col gap-2">
-                  {task.narration.slice(-5).map((line, i) => (
-                    <li
-                      key={`${line.at}-${i}`}
-                      className="agent-voice"
-                      style={{ fontSize: "var(--text-sm)" }}
-                    >
-                      {line.text}
-                    </li>
-                  ))}
-                </ul>
-              )}
-
-              {task.parked && (
-                <div
-                  className="agent-voice mt-5"
-                  style={{
-                    background: "var(--primary-soft)",
-                    borderRadius: "var(--radius-card-sm)",
-                    padding: "16px 20px",
-                  }}
-                >
-                  <p style={{ fontWeight: 600, color: "var(--primary)" }}>
-                    {voice.agent.parkedTitle}
-                  </p>
-                  <p className="mt-1" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-                    {task.parked.detail}
-                  </p>
-                  <div className="mt-4 flex flex-wrap gap-3">
-                    <Button variant="primary" size="sm" onClick={() => doppel.answerAgent(task.id, "approve")}>
-                      {voice.agent.approve}
-                    </Button>
-                    <Button size="sm" onClick={() => doppel.answerAgent(task.id, "skip")}>
-                      {voice.agent.skip}
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => doppel.answerAgent(task.id, "stop")}>
-                      {voice.agent.abandon}
-                    </Button>
+                      {statusLabel(task.status)}
+                    </span>
+                    {task.agent && (
+                      <span className="micro-label">{task.agent}</span>
+                    )}
+                    <span className="micro-label">
+                      {ago(task.createdAt, now)}
+                    </span>
                   </div>
-                </div>
-              )}
-
-              {task.summary && (
-                <div className="pressed mt-5" style={{ padding: 20 }}>
-                  <p style={{ fontWeight: 600 }}>
-                    {task.summary.outcome === "done"
-                      ? voice.agent.doneTitle
-                      : voice.agent.stoppedTitle}
-                  </p>
-                  <p className="agent-voice mt-2" style={{ fontSize: "var(--text-sm)" }}>
-                    {task.summary.text}
-                  </p>
-                  {task.summary.changed.length > 0 && (
-                    <ul className="mt-3 flex flex-col gap-1">
-                      {task.summary.changed.slice(0, 6).map((c, i) => (
-                        <li
-                          key={`${c}-${i}`}
-                          style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-                        >
-                          {c}
-                        </li>
-                      ))}
-                    </ul>
+                  {task.result && (
+                    <div
+                      className="mt-3"
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: "var(--radius-control)",
+                        background: "var(--surface-alt)",
+                        fontSize: "var(--text-sm)",
+                        color: "var(--ink)",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {task.result}
+                    </div>
                   )}
-                  <p className="micro-label mt-4">
-                    {formatDuration(task.summary.durationSec)} &middot; {task.summary.steps} steps
-                  </p>
                 </div>
-              )}
+                <div className="flex shrink-0 items-center gap-2">
+                  {task.status === "pending" && (
+                    <>
+                      <Button variant="primary" size="sm" onClick={() => doppel.inboxApprove(task.id)}>
+                        Approve
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => doppel.inboxReject(task.id)}>
+                        Reject
+                      </Button>
+                    </>
+                  )}
+                  {(task.status === "failed" || task.status === "rejected") && (
+                    <Button variant="ghost" size="sm" onClick={() => doppel.inboxRetry(task.id)}>
+                      Retry
+                    </Button>
+                  )}
+                  {(task.status === "approved" || task.status === "pending") && (
+                    <Button variant="ghost" size="sm" onClick={() => doppel.inboxReject(task.id)}>
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           </motion.div>
         ))}
       </AnimatePresence>
-    </section>
-  );
-}
 
-/* ===========================================================================
-   Agent History — past completed runs
-   =========================================================================== */
-
-function AgentHistory() {
-  const [runs, setRuns] = useState<AgentRun[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const now = useDoppel((s) => s.now);
-  const agents = useDoppel((s) => s.agents);
-  /* Refresh history when any task finishes. */
-  const doneCount = agents.filter((t) => t.summary).length;
-
-  useEffect(() => {
-    doppel.agentHistory(50).then((r) => {
-      setRuns(r);
-      setLoaded(true);
-    });
-  }, [doneCount]);
-
-  if (!loaded || runs.length === 0) return null;
-
-  const visible = showAll ? runs : runs.slice(0, 3);
-
-  return (
-    <section className="mb-14">
-      <SectionHeading>{voice.history.title}</SectionHeading>
-      <ul className="mt-5 flex flex-col gap-3">
-        {visible.map((run) => (
-          <li key={run.id} className="flat" style={{ padding: "16px 20px" }}>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>
-                  {run.title}
-                </p>
-                <p className="agent-voice mt-1" style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}>
-                  {run.note}
-                </p>
-              </div>
-              <span
-                className="micro-label shrink-0"
-                style={{ color: run.outcome === "clean" ? "var(--primary)" : "var(--slate)" }}
-              >
-                {run.outcome === "clean" ? "Done" : "Stopped"}
-              </span>
-            </div>
-            {run.changes.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {run.changes.slice(0, 3).map((c, i) => (
-                  <span
-                    key={`${c}-${i}`}
-                    style={{
-                      fontSize: "var(--text-xs, 11px)",
-                      color: "var(--slate)",
-                      background: "var(--surface-alt)",
-                      padding: "2px 8px",
-                      borderRadius: "var(--radius-control)",
-                    }}
-                  >
-                    {c}
-                  </span>
-                ))}
-              </div>
-            )}
-            <p className="micro-label mt-2">
-              {ago(run.at, now)}
-              {run.durationSec > 0 && ` · ${formatDuration(run.durationSec)}`}
-              {run.steps > 0 && ` · ${run.steps} steps`}
-            </p>
-          </li>
-        ))}
-      </ul>
-      {!showAll && runs.length > 3 && (
-        <Button variant="ghost" size="sm" className="mt-4" onClick={() => setShowAll(true)}>
-          {voice.history.showMore} ({runs.length - 3} more)
-        </Button>
+      {/* Show/hide completed */}
+      {completed.length > 0 && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="cursor-pointer"
+          style={{
+            fontSize: "var(--text-xs, 11px)",
+            color: "var(--slate)",
+            background: "none",
+            border: "none",
+            marginTop: 4,
+          }}
+        >
+          Show {completed.length} completed
+        </button>
+      )}
+      {expanded && tasks.length > active.length && (
+        <div className="flex items-center gap-4" style={{ marginTop: 4 }}>
+          <button
+            onClick={() => setExpanded(false)}
+            className="cursor-pointer"
+            style={{
+              fontSize: "var(--text-xs, 11px)",
+              color: "var(--slate)",
+              background: "none",
+              border: "none",
+            }}
+          >
+            Hide completed
+          </button>
+          <button
+            onClick={() => doppel.inboxClear()}
+            className="cursor-pointer"
+            style={{
+              fontSize: "var(--text-xs, 11px)",
+              color: "var(--slate)",
+              background: "none",
+              border: "none",
+            }}
+          >
+            Clear finished
+          </button>
+        </div>
       )}
     </section>
   );
 }
 
 /* ===========================================================================
-   Pattern Cards & Nudge Cards
+   Nudge Cards
    =========================================================================== */
-
-function PatternCards() {
-  const [patterns, setPatterns] = useState<BrainPattern[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const now = useDoppel((s) => s.now);
-  const narrationLen = useDoppel((s) => s.narration.length);
-
-  const refresh = useCallback(async () => {
-    const result = await doppel.brainPatterns();
-    setPatterns(result ?? []);
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh, narrationLen]);
-
-  if (!loaded || patterns.length === 0) return null;
-
-  return (
-    <section className="mb-14">
-      <SectionHeading>{voice.patterns.title}</SectionHeading>
-      <ul className="mt-5 flex flex-col gap-3">
-        {patterns.slice(0, 4).map((p) => (
-          <li
-            key={p.id}
-            className="raised flex flex-wrap items-start justify-between gap-4"
-            style={{ padding: "16px 20px" }}
-          >
-            <div className="min-w-0 flex-1">
-              <p className="agent-voice" style={{ fontSize: "var(--text-sm)" }}>
-                {p.label}
-              </p>
-              {p.intent && (
-                <p
-                  className="agent-voice mt-1"
-                  style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}
-                >
-                  {p.intent}
-                </p>
-              )}
-              <p className="micro-label mt-1.5">
-                {appLabel(p.app)} &middot; {voice.patterns.count(p.count)} &middot; last {ago(p.lastSeen, now)}
-              </p>
-            </div>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() =>
-                doppel.runAgent({
-                  instruction: p.instruction,
-                  title: p.label,
-                })
-              }
-            >
-              {voice.patterns.doIt}
-            </Button>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
 function NudgeCards({ nudges }: { nudges: Nudge[] }) {
   const handleAct = async (nudge: Nudge) => {
-    const result = await doppel.actOnNudge(nudge.id);
-    if (!result?.ok) return;
-
-    if (nudge.kind === "offer") {
-      doppel.runAgent({
-        instruction: nudge.detail ?? nudge.text,
-        title: nudge.text,
-      });
-    }
+    await doppel.actOnNudge(nudge.id);
   };
 
   return (

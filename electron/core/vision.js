@@ -313,10 +313,10 @@ async function look({ reason = "scheduled", force = false } = {}) {
 
     const result = await claude.ask({
       system: SYSTEM,
-      effort: majorChange ? claude.EFFORT.observe : "low",
+      effort: "low",
       thinking: false,
-      maxTokens: majorChange ? 2000 : 1200,
-      fast: !majorChange,
+      maxTokens: majorChange ? 1200 : 800,
+      fast: true,
       schema: SCHEMA,
       messages: [
         {

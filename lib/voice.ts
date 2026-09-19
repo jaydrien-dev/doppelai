@@ -249,6 +249,16 @@ export const voice = {
     passwordBody: "Optional. Ten characters or more.",
     passwordSet: "Password saved.",
     passwordTooShort: "That needs to be at least ten characters.",
+
+    renameTitle: "Rename this machine",
+    renameBody: "The name other devices see for this one.",
+    renamed: "Renamed.",
+
+    serverTitle: "Identity server",
+    serverBody:
+      "Where your account lives. The default is your own machine. " +
+      "Change this only if you're running the server somewhere else.",
+    serverUpdated: "Server updated.",
   },
 
   /* --- The overlay ------------------------------------------------------------------- */
@@ -364,46 +374,11 @@ export const voice = {
       "itself once, the first time I have something to remember.",
   },
 
-  /* --- The agent --------------------------------------------------------------------- */
-  agent: {
-    title: "Ask me to do something",
-    intro:
-      "Tell me what you want done and I'll do it on this machine — your applications, " +
-      "your files, your logged-in sessions. I work with whatever you have open, " +
-      "no API or integration needed.",
-    placeholder: "Tidy the screenshots on my desktop into a folder for this month",
-    go: "Do it",
-    background: "Working in the background. You can keep working.",
-    foreground: "Using your screen. Step away while I work.",
-    running: (step: number) => `Working — step ${step}`,
-    needsGui:
-      "I can't drive applications yet. Switch that on in Permissions and I'll be able to " +
-      "do anything you can do at the keyboard.",
-    needsKey: "I need a key before I can do this.",
-    stop: "Stop",
-    stopping: "Stopping",
-    parkedTitle: "I've stopped to ask.",
-    approve: "Go ahead",
-    skip: "Skip that bit",
-    abandon: "Stop here",
-    doneTitle: "That's done.",
-    stoppedTitle: "I stopped.",
-    changedLabel: "What changed",
-    incompleteLabel: "What I didn't finish",
-    nothingChanged: "Nothing changed.",
-    irreversible: "Some of this drove your applications directly, so I can't undo it.",
-    recalled: (n: number) => `I started with ${n} things I already knew.`,
-    empty: "Nothing running.",
-    emptySub: "Ask me for something and you'll see every step here.",
-    history: "Things I've done",
-  },
-
   /* --- Patterns — things you do repeatedly ------------------------------------------ */
   patterns: {
     title: "Things you do",
     empty: "I haven't spotted any patterns yet. Keep working and I'll notice.",
     count: (n: number) => `${n} ${plural(n, "time", "times")}`,
-    doIt: "Do this for me",
   },
 
   /* --- Morning Brief ----------------------------------------------------------------- */
@@ -418,32 +393,6 @@ export const voice = {
     openThreads: "Open threads",
     suggestion: "My suggestion for today",
     refresh: "Write a new one",
-  },
-
-  /* --- Routines — learned automation ------------------------------------------------ */
-  routines: {
-    title: "Routines",
-    intro: "Things I've seen you do often enough that I can do them for you.",
-    empty: "Nothing yet. I need to watch for a while before I can spot patterns.",
-    proposalsTitle: "I've noticed these patterns",
-    accept: "Automate this",
-    reject: "Not interested",
-    runNow: "Run now",
-    remove: "Remove",
-    enable: "Enable",
-    disable: "Disable",
-    enabled: "Enabled",
-    disabled: "Disabled",
-    schedule: (kind: string, timeHint: string) =>
-      kind === "daily" && timeHint
-        ? `Daily around ${timeHint}`
-        : kind === "on-launch"
-          ? "Every time the app opens"
-          : "Manual only",
-    lastRun: (when: string) => `Last run ${when}`,
-    neverRun: "Never run",
-    count: (n: number) => `Run ${n} ${n === 1 ? "time" : "times"}`,
-    reason: (reason: string) => reason,
   },
 
   /* --- Timeline search -------------------------------------------------------------- */
@@ -468,45 +417,21 @@ export const voice = {
     count: (n: number) => `${n} ${n === 1 ? "moment" : "moments"}`,
   },
 
-  /* --- Workflow recording ----------------------------------------------------------- */
-  recorder: {
-    title: "Watch me do this",
-    body:
-      "Show me a task once and I'll learn the procedure. I watch the screen while you " +
-      "work, then distill it into steps I can replay later.",
-    start: "Start recording",
-    stop: "I'm done",
-    abort: "Cancel",
-    recording: "Recording",
-    steps: (n: number) => `${n} ${n === 1 ? "step" : "steps"} captured`,
-    duration: (sec: number) =>
-      sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`,
-    distilling: "Learning the procedure",
-    tooShort: "I need to see at least two things to learn from.",
-    needsScreen: "I need screen watching turned on to record.",
-    needsKey: "I need a key before I can record.",
-    resultTitle: "Here's what I learned",
-    save: "Save as routine",
-    saved: "Saved. You'll find it in Routines.",
-    discard: "Discard",
-    placeholder: "What are you about to do? (optional)",
-  },
-
   /* --- Security — biometric lock ---------------------------------------------------- */
   security: {
     title: "Biometric lock",
     body:
-      "Require Windows Hello (face, fingerprint, or PIN) to access Doppel. " +
+      "Require biometric authentication (face, fingerprint, or PIN) to access Doppel. " +
       "Your brain data is already encrypted at rest — this adds a second barrier.",
     enable: "Turn on",
     disable: "Turn off",
     locked: "Locked",
-    unlock: "Unlock with Windows Hello",
+    unlock: "Unlock with biometrics",
     unlocking: "Verifying",
     lockNow: "Lock now",
     unavailable:
-      "Windows Hello isn't set up on this machine. Set it up in Windows Settings " +
-      "under Accounts > Sign-in options, then come back.",
+      "Biometric authentication isn't set up on this machine. " +
+      "Set it up in your system settings, then come back.",
     failed: "Verification failed. Try again.",
     timeout: "Auto-lock after inactivity",
     timeoutNone: "Only when I restart",

@@ -565,12 +565,16 @@ async function recallSemantic(query, options = {}) {
  * them cheap to keep and fast to search. This is the only place they become
  * prose again — when a person actually asks.
  */
-async function answer(question, { budgetTokens = 4000, fast = false, history = [], screenContext = null, onText } = {}) {
+async function answer(question, { budgetTokens = 4000, fast = false, history = [], screenContext = null, webContext = null, onText, onThinking } = {}) {
   if (!claude.configured()) return { ok: false, reason: "no-key" };
 
-  const limit = fast ? 5 : 18;
-  const budget = fast ? 1200 : budgetTokens;
-  const pack = await recallSemantic(question, { limit, budgetTokens: budget });
+  const limit = fast ? 3 : 18;
+  const budget = fast ? 800 : budgetTokens;
+  /* Fast path uses lexical-only recall — no embedding inference, no blocking
+     the event loop.  The full path still does semantic for deeper questions. */
+  const pack = fast
+    ? recall(question, { limit, budgetTokens: budget })
+    : await recallSemantic(question, { limit, budgetTokens: budget });
 
   const found = pack.entities.length + pack.episodes.length + pack.digests.length;
 
@@ -582,22 +586,30 @@ async function answer(question, { budgetTokens = 4000, fast = false, history = [
   const screenBlock = screenContext
     ? `\n\nWhat I can see on their screen right now:\n\n${screenContext}`
     : "";
+  const webBlock = webContext
+    ? `\n\nWhat I found on the web:\n\n${webContext}`
+    : "";
   const messages = [
     ...history.map((h) => ({ role: h.role, content: h.content })),
     {
       role: "user",
-      content: `They said: "${question}"${screenBlock}${memoryBlock}`,
+      content: `They said: "${question}"${screenBlock}${memoryBlock}${webBlock}`,
     },
   ];
 
-  /* Streaming path — tokens arrive via onText as they're generated. */
-  if (onText && fast) {
+  /* Streaming path — tokens arrive via onText as they're generated.
+     Uses Sonnet (not Haiku) because only Sonnet supports extended thinking.
+     Streaming makes it feel just as fast — first thinking tokens arrive in
+     ~300ms, so the user sees activity immediately. */
+  if (onText) {
     const result = await claude.streamAsk({
-      system: ANSWER_FAST_SYSTEM,
+      system: fast ? ANSWER_FAST_SYSTEM : ANSWER_SYSTEM,
       messages,
-      maxTokens: 400,
-      fast: true,
+      maxTokens: fast ? 600 : 1200,
+      fast: false,
+      thinking: true,
       onText,
+      onThinking,
     });
     if (!result.ok) return { ...result, pack };
     return { ok: true, text: result.text, pack };
@@ -607,7 +619,7 @@ async function answer(question, { budgetTokens = 4000, fast = false, history = [
     system: fast ? ANSWER_FAST_SYSTEM : ANSWER_SYSTEM,
     effort: fast ? "low" : claude.EFFORT.consolidate,
     thinking: false,
-    maxTokens: fast ? 400 : 600,
+    maxTokens: fast ? 300 : 600,
     fast,
     messages,
   });
@@ -618,27 +630,28 @@ async function answer(question, { budgetTokens = 4000, fast = false, history = [
 
 const ANSWER_SYSTEM = `You are Doppel — not a chatbot, not an assistant. You are a second mind that lives on this person's machine. You watch how they work, you remember what they do, and you have your own perspective on it.
 
-You are given memories your retrieval turned up — summaries of whole periods and individual moments with the exact words and figures you read off their screen.
+You are given memories your retrieval turned up — summaries of whole periods and individual moments with the exact words and figures you read off their screen. You can ONLY reference memories and screen context provided below. If no relevant memories are provided, say so honestly — never fabricate, infer, or claim to have seen something that isn't in the provided context.
 
 How to be:
 - You have opinions. If you notice they've been doing the same thing three different ways, say so. If something they're working on reminds you of something else they did, connect the dots. If you think there's a better approach, suggest it — don't wait to be asked.
 - You're not servile. You don't say "of course!" or "happy to help!" — you talk like a sharp friend who's been sitting next to them and paying attention. You notice things. You have thoughts.
-- Answer from memory when you have it. Quote exact figures, wording, times. If the memories don't answer a question, say so plainly — never invent.
+- Answer from memory when you have it. Quote exact figures, wording, times. If web search results are provided, use them to give accurate, up-to-date answers — cite what you found naturally ("I looked it up — ..."). Combine memory and web results when both are relevant.
 - When they say something conversational, engage genuinely. React to what they're actually saying, not with a canned response. If they're frustrated, acknowledge it. If something is interesting, say why you think so.
 - Volunteer context. If they ask about X and you also know something relevant about Y, bring it up. You're not a search engine that only returns exact matches — you're a mind that makes connections.
 - Be direct. If they're about to do something you've seen go wrong before, tell them. If you notice a pattern they might not see, point it out.
+- For general knowledge questions — answer directly, using web results if available. You're a capable AI with access to the web.
 
 Voice: first person, warm, slightly dry, direct. Short sentences. Brief — a paragraph or two, not an essay. No exclamation marks, no emoji, no bullet lists unless the answer is genuinely a list.`;
 
-const ANSWER_FAST_SYSTEM = `You are Doppel — a second mind on this person's machine. You watch how they work, you remember, and you have your own perspective.
+const ANSWER_FAST_SYSTEM = `You are Doppel — a second mind on this person's machine. You have memories from watching them work, and your own perspective on it.
 
 Talk to them like a sharp friend who's been paying attention all day. Not an assistant — a mind.
 
-- Answer from memory when you have it. Quote exact figures and times.
-- General knowledge questions: just answer. You're still Claude under the hood.
-- Casual conversation: engage genuinely. React to what they're actually saying. If they're frustrated, you get it. If something's interesting, say why.
-- Have opinions. If you notice a pattern, a shortcut, or something they might not see — say it without being asked. Connect dots between things they've done.
-- If you don't know, say so in one sentence. Don't hedge or over-qualify.
+- Answer from memory when you have it. Quote exact figures and times. If web search results are provided, use them — say "I looked it up" naturally.
+- General knowledge questions: answer using web results if available, otherwise your own knowledge.
+- Casual conversation: engage genuinely. React to what they're actually saying.
+- Have opinions. If you notice a pattern, a shortcut, or something they might not see — say it without being asked.
+- Don't fabricate memories or screen content. Web results and memories are your sources of truth.
 
 First person. Direct. Short sentences. No emoji.`;
 
