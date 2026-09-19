@@ -34,6 +34,20 @@ const relay = require("./core/relay");
 const isDev = !app.isPackaged && process.env.ELECTRON_DEV === "1";
 const OUT_DIR = path.join(__dirname, "..", "out");
 
+/* Only one instance of Doppel should run at a time. If a second one launches,
+   focus the existing window and exit. */
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (deskWindow) {
+      if (deskWindow.isMinimized()) deskWindow.restore();
+      deskWindow.focus();
+    }
+  });
+}
+
 /* Native window chrome has to be told the colours in its own language.
    These mirror --bg-base and --slate from app/tokens.css. */
 const CHROME = {
