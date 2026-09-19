@@ -27,8 +27,8 @@ const store = require("./store");
  * model of themselves. Running this yourself is the point.
  */
 
-const PORT = Number(process.env.DOPPEL_SERVER_PORT ?? 4319);
-const HOST = process.env.DOPPEL_SERVER_HOST ?? "127.0.0.1";
+const PORT = Number(process.env.PORT ?? process.env.DOPPEL_SERVER_PORT ?? 4319);
+const HOST = process.env.DOPPEL_SERVER_HOST ?? "0.0.0.0";
 const DATA_DIR =
   process.env.DOPPEL_SERVER_DATA ?? path.join(os.homedir(), ".doppel-identity");
 
@@ -319,13 +319,97 @@ async function revokeDeviceRoute(req, res, deviceId) {
   });
 }
 
+/* ----------------------------------------------------------- MCP relay */
+
+const WebSocket = require("ws");
+
+/**
+ * MCP relay — lets external AI agents reach a user's local Doppel brain
+ * through a public URL.
+ *
+ * Flow:
+ *   1. Doppel desktop app connects via WS to /v1/relay (auth'd with bearer token)
+ *   2. External AI agent sends MCP HTTP request to /mcp/:accountId
+ *   3. Server forwards the request over the WS to the desktop app
+ *   4. Desktop app processes it locally and sends the response back
+ *   5. Server returns the response to the external AI agent
+ *
+ * The server never sees brain data — it's a dumb pipe.
+ */
+
+/** Map<accountId, WebSocket> — one relay connection per account. */
+const relayClients = new Map();
+
+/** Map<requestId, { res, timer }> — pending HTTP requests waiting for WS response. */
+const pendingRelay = new Map();
+let relaySeq = 0;
+
+/**
+ * Handle incoming MCP requests from external AI agents.
+ * Route: POST /mcp/:accountId  (also GET, DELETE for full Streamable HTTP support)
+ */
+async function mcpRelayRoute(req, res, accountId) {
+  const ws = relayClients.get(accountId);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    res.setHeader("content-type", "application/json");
+    return json(res, 502, { error: "device_offline", detail: "The user's Doppel is not connected." });
+  }
+
+  /* Read the raw body (MCP JSON-RPC). */
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = Buffer.concat(chunks).toString("utf8");
+
+  const relayId = String(++relaySeq);
+
+  /* Forward to the desktop app over WS. */
+  ws.send(JSON.stringify({
+    type: "mcp-request",
+    id: relayId,
+    method: req.method,
+    headers: {
+      "content-type": req.headers["content-type"],
+      "mcp-session-id": req.headers["mcp-session-id"],
+    },
+    body,
+  }));
+
+  /* Wait for the response (timeout after 120s). */
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingRelay.delete(relayId);
+      json(res, 504, { error: "timeout", detail: "Doppel did not respond in time." });
+      resolve();
+    }, 120_000);
+
+    pendingRelay.set(relayId, {
+      resolve: (relayRes) => {
+        clearTimeout(timer);
+        pendingRelay.delete(relayId);
+
+        /* Forward response headers */
+        const outHeaders = {
+          "content-type": relayRes.headers?.["content-type"] ?? "application/json",
+        };
+        if (relayRes.headers?.["mcp-session-id"]) {
+          outHeaders["mcp-session-id"] = relayRes.headers["mcp-session-id"];
+        }
+        res.writeHead(relayRes.status ?? 200, outHeaders);
+        res.end(relayRes.body ?? "");
+        resolve();
+      },
+    });
+  });
+}
+
 /* --------------------------------------------------------------- the server */
 
 const server = http.createServer(async (req, res) => {
   /* The desktop app is not a browser origin, but the Pocket surface may be. */
   res.setHeader("access-control-allow-origin", "*");
-  res.setHeader("access-control-allow-headers", "authorization, content-type");
+  res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-session-id");
   res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("access-control-expose-headers", "mcp-session-id");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
 
   const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
@@ -333,6 +417,13 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === "/v1/health") return json(res, 200, { ok: true, service: "doppel-identity" });
+
+    /* MCP relay — /mcp/:accountId */
+    const mcpMatch = url.pathname.match(/^\/mcp\/([\w-]+)$/);
+    if (mcpMatch) {
+      res.setHeader("access-control-expose-headers", "mcp-session-id");
+      return await mcpRelayRoute(req, res, mcpMatch[1]);
+    }
 
     const revoke = url.pathname.match(/^\/v1\/devices\/([\w-]+)\/revoke$/);
     if (revoke && req.method === "POST") return await revokeDeviceRoute(req, res, revoke[1]);
@@ -351,9 +442,68 @@ function start() {
   store.init(DATA_DIR);
   setInterval(() => store.prune(), 60 * 60_000);
 
+  /* WebSocket server for relay connections from desktop apps. */
+  const wss = new WebSocket.Server({ noServer: true });
+
+  server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    if (url.pathname !== "/v1/relay") {
+      socket.destroy();
+      return;
+    }
+
+    /* Authenticate using the same bearer token as HTTP routes. */
+    const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()
+                || url.searchParams.get("token");
+    const found = store.authenticate(token);
+    if (!found) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      const accountId = found.account.id;
+      console.log(`[relay] device ${found.device.name} connected (account ${accountId})`);
+
+      /* Close existing connection for this account (only one relay per account). */
+      const prev = relayClients.get(accountId);
+      if (prev && prev.readyState === WebSocket.OPEN) prev.close(4000, "replaced");
+
+      relayClients.set(accountId, ws);
+
+      /* Tell the client its public MCP URL. */
+      ws.send(JSON.stringify({
+        type: "relay-ready",
+        mcpUrl: `/mcp/${accountId}`,
+      }));
+
+      ws.on("message", (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === "mcp-response" && msg.id && pendingRelay.has(msg.id)) {
+            pendingRelay.get(msg.id).resolve(msg);
+          }
+        } catch (err) {
+          console.error("[relay] bad message:", err.message);
+        }
+      });
+
+      ws.on("close", () => {
+        if (relayClients.get(accountId) === ws) {
+          relayClients.delete(accountId);
+          console.log(`[relay] device ${found.device.name} disconnected`);
+        }
+      });
+
+      ws.on("error", (err) => console.error("[relay] ws error:", err.message));
+    });
+  });
+
   server.listen(PORT, HOST, () => {
     console.log(`[doppel-id] listening on http://${HOST}:${PORT}`);
     console.log(`[doppel-id] identity stored in ${DATA_DIR}`);
+    console.log(`[doppel-id] MCP relay available at /mcp/:accountId`);
     if (!EMAIL_CONFIGURED) {
       console.log("[doppel-id] no mail provider — sign-in links are printed here");
     }

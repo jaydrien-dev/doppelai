@@ -1,0 +1,17 @@
+{
+  "name": "doppel-identity",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Doppel identity server — accounts, devices, and MCP relay",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "stripe": "^22.6.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
