@@ -23,6 +23,7 @@ const observer = require("./core/observer");
 const win32 = require("./core/win32");
 const vision = require("./core/vision");
 const brain = require("./core/brain");
+const relay = require("./core/relay");
 
 /**
  * Doppel runs as a real desktop application. In development it points at the
@@ -513,6 +514,17 @@ app.whenReady().then(() => {
   mcpProc.on("exit", (code) => console.log(`[mcp-http] exited (${code})`));
   app._mcpProc = mcpProc;
 
+  /* ------------------------------------------------ MCP relay to identity server */
+  /* Give the local MCP server a moment to start, then connect the relay. */
+  setTimeout(() => {
+    relay.init((s) => {
+      /* Broadcast relay status to all renderer windows */
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send("doppel:relay", s);
+      }
+    });
+  }, 2000);
+
   /* --------------------------------------------------------- auto-update */
   if (!isDev) {
     autoUpdater.autoDownload = true;
@@ -537,6 +549,7 @@ app.on("before-quit", () => {
   db.flush();
   try { require("./core/browser").shutdown(); } catch {}
   try { require("./core/addons").shutdown(); } catch {}
+  try { relay.shutdown(); } catch {}
   try { app._mcpProc?.kill(); } catch {}
 });
 

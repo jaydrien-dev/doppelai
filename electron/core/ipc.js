@@ -897,7 +897,9 @@ function register(opts = {}) {
       .replace(/\b(find|search|where|is|are|my|the|a|an|file|document|folder|called|named|for)\b/g, "")
       .trim()
       .split(/\s+/)
-      .filter((w) => w.length > 2);
+      .filter((w) => w.length > 2)
+      .map((w) => w.replace(/[^a-z0-9._-]/gi, ""))
+      .filter(Boolean);
 
     if (keywords.length === 0) return null;
 
@@ -1331,7 +1333,9 @@ function register(opts = {}) {
     const tasks = readInbox();
     const task = tasks.find((t) => t.id === id);
     if (!task) return { ok: false };
+    const wasClaimed = task.status === "claimed";
     task.status = "rejected";
+    if (wasClaimed) task.completedAt = Date.now();
     writeInbox(tasks);
     pushState();
     return { ok: true };
@@ -1513,15 +1517,13 @@ function register(opts = {}) {
     if (!last?.app) return { ok: false, reason: "nothing" };
 
     try {
-      const { execSync } = require("child_process");
+      const { execFileSync } = require("child_process");
       if (process.platform === "win32") {
-        execSync(
-          `powershell -NoProfile -Command "Start-Process '${last.app.replace(/'/g, "''")}'"`
-        );
+        execFileSync("powershell", ["-NoProfile", "-Command", `Start-Process '${last.app.replace(/'/g, "''")}'`]);
       } else if (process.platform === "darwin") {
-        execSync(`open -a ${JSON.stringify(last.app)}`);
+        execFileSync("open", ["-a", last.app]);
       } else {
-        execSync(`xdg-open ${JSON.stringify(last.app)}`);
+        execFileSync("xdg-open", [last.app]);
       }
       return { ok: true, app: last.app, title: last.text };
     } catch {
@@ -1536,9 +1538,19 @@ function register(opts = {}) {
   const mcpHttpPort = Number(process.env.DOPPEL_MCP_PORT ?? 4320);
   const mcpHttpUrl = `https://127.0.0.1:${mcpHttpPort}/mcp`;
 
+  const relay = require("./relay");
+
   ipcMain.handle("mcp:snippet", () => {
-    return { snippet: mcpSnippet, scriptPath: mcpScript, httpUrl: mcpHttpUrl };
+    const relayStatus = relay.status();
+    return {
+      snippet: mcpSnippet,
+      scriptPath: mcpScript,
+      httpUrl: mcpHttpUrl,
+      relayUrl: relayStatus.mcpUrl || null,
+    };
   });
+
+  ipcMain.handle("relay:status", () => relay.status());
 
   db.subscribe(() => {});
   pushState();

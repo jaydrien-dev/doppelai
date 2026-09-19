@@ -15,9 +15,15 @@ const db = require("./db");
  * API key. It is never handed to the interface.
  */
 
-const DEFAULT_SERVER = "http://127.0.0.1:4319";
+const DEFAULT_SERVER = "https://doppelai-production.up.railway.app";
+const OLD_LOCAL = "http://127.0.0.1:4319";
 
-const base = () => (db.get().account?.server || DEFAULT_SERVER).replace(/\/$/, "");
+const base = () => {
+  const stored = db.get().account?.server;
+  // Migrate old local default to the public server
+  if (!stored || stored === OLD_LOCAL) return DEFAULT_SERVER;
+  return stored.replace(/\/$/, "");
+};
 const tokenOf = () => db.get().account?.token ?? "";
 
 const deviceIdentity = () => ({
@@ -225,4 +231,5 @@ module.exports = {
   createCheckout,
   verifyCheckout,
   DEFAULT_SERVER,
+  serverUrl: base,
 };

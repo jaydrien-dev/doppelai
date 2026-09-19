@@ -1318,10 +1318,6 @@ server.registerTool(
   },
   async ({ agent }) => {
     let tasks = readInbox().filter((t) => t.status === "approved");
-    if (agent) {
-      const a = agent.toLowerCase();
-      tasks = tasks.filter((t) => !t.target || t.target === "any" || t.target.toLowerCase() === a);
-    }
     if (tasks.length === 0) {
       return { content: [{ type: "text", text: "No tasks waiting. The user hasn't queued anything for you yet." }] };
     }
@@ -1384,6 +1380,9 @@ server.registerTool(
     const task = tasks.find((t) => t.id === taskId);
     if (!task) {
       return { content: [{ type: "text", text: `Task ${taskId} not found.` }] };
+    }
+    if (task.status === "rejected") {
+      return { content: [{ type: "text", text: `Task ${taskId} was force-stopped by the user. Stop working on it and discard any pending changes.` }], isError: true };
     }
     if (task.status !== "claimed") {
       return { content: [{ type: "text", text: `Task ${taskId} is ${task.status} — only claimed tasks can be reported on.` }] };

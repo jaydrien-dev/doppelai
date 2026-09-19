@@ -211,7 +211,9 @@ export interface DoppelBridge {
   resumeLast: () => Promise<{ ok: boolean; app?: string; title?: string; reason?: string }>;
 
   /* MCP integration */
-  mcpSnippet: () => Promise<{ snippet: unknown; scriptPath: string; httpUrl?: string }>;
+  mcpSnippet: () => Promise<{ snippet: unknown; scriptPath: string; httpUrl?: string; relayUrl?: string | null }>;
+  relayStatus: () => Promise<{ connected: boolean; mcpUrl: string | null }>;
+  onRelay: (fn: (status: { connected: boolean; mcpUrl: string | null }) => void) => (() => void) | undefined;
 
   forgetEntity: (id: string) => Promise<unknown>;
   listWindows: () => Promise<{ title: string; procId: number }[]>;
@@ -523,6 +525,10 @@ export const doppel = {
   /* MCP */
   mcpSnippet: () =>
     api()?.mcpSnippet() ?? Promise.resolve({ snippet: {}, scriptPath: "" }),
+  relayStatus: () =>
+    api()?.relayStatus() ?? Promise.resolve({ connected: false, mcpUrl: null }),
+  onRelay: (fn: (s: { connected: boolean; mcpUrl: string | null }) => void) =>
+    api()?.onRelay(fn),
 
   forgetEntity: (id: string) => api()?.forgetEntity(id),
   listWindows: () => api()?.listWindows() ?? Promise.resolve([]),

@@ -30,6 +30,7 @@ const empty = () => ({
   devices: [],
   sessions: [],
   links: [],
+  oauthTokens: [],
 });
 
 function init(dir) {
@@ -98,9 +99,13 @@ function accountByEmail(email) {
 }
 
 function createAccount(email) {
+  const normalized = normaliseEmail(email);
+  /* Deterministic ID: same email always gets the same account ID.
+     This keeps the MCP relay URL stable even if the account is recreated. */
+  const stableId = `acct_${crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 24)}`;
   const account = {
-    id: id("acct"),
-    email: normaliseEmail(email),
+    id: stableId,
+    email: normalized,
     createdAt: Date.now(),
     password: null,
   };
@@ -279,6 +284,30 @@ function deleteAccount(accountId) {
   return data.accounts.length < before;
 }
 
+/* -------------------------------------------------------------- OAuth tokens */
+
+const OAUTH_TOKEN_LIFE = 24 * 60 * 60_000; // 24 hours
+
+function createOAuthToken(tokenHash, clientId, accountId) {
+  const entry = {
+    tokenHash,
+    clientId,
+    accountId,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + OAUTH_TOKEN_LIFE,
+  };
+  data.oauthTokens.push(entry);
+  save();
+  return entry;
+}
+
+function findOAuthToken(tokenHash) {
+  const entry = data.oauthTokens.find((t) => t.tokenHash === tokenHash);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) return null;
+  return entry;
+}
+
 /* --------------------------------------------------------------------------- */
 
 /** Drop what has aged out. Nothing here is worth keeping past its life. */
@@ -286,6 +315,7 @@ function prune() {
   const now = Date.now();
   data.links = data.links.filter((l) => now < l.expiresAt && !l.usedAt);
   data.sessions = data.sessions.filter((s) => now < s.expiresAt);
+  data.oauthTokens = (data.oauthTokens ?? []).filter((t) => now < t.expiresAt);
   save();
 }
 
@@ -309,6 +339,9 @@ module.exports = {
   exportAccount,
   deleteAccount,
   normaliseEmail,
+  createOAuthToken,
+  findOAuthToken,
+  digest,
   SESSION_LIFE,
   LINK_LIFE,
   _data: () => data,

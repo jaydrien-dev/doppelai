@@ -105,7 +105,6 @@ function connect() {
   try {
     ws = new WebSocket(wsUrl, {
       headers: { authorization: `Bearer ${token}` },
-      rejectUnauthorized: false,
     });
   } catch (err) {
     console.error("[relay] failed to create WebSocket:", err.message);
@@ -159,7 +158,9 @@ function connect() {
     console.log(`[relay] disconnected (code ${code})`);
     publicMcpUrl = null;
     if (onStatusChange) onStatusChange(status());
-    if (!intentionallyClosed) scheduleReconnect();
+    /* 4000 = "replaced" — another device took this account's relay slot.
+       Reconnecting would just kick that one off in a loop. */
+    if (!intentionallyClosed && code !== 4000) scheduleReconnect();
   });
 
   ws.on("error", (err) => {

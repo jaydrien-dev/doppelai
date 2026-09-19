@@ -148,6 +148,12 @@ contextBridge.exposeInMainWorld("doppel", {
 
   /* MCP integration */
   mcpSnippet: () => invoke("mcp:snippet"),
+  relayStatus: () => invoke("relay:status"),
+  onRelay: (fn) => {
+    const handler = (_e, status) => fn(status);
+    ipcRenderer.on("doppel:relay", handler);
+    return () => ipcRenderer.removeListener("doppel:relay", handler);
+  },
 
   /* memory + misc */
   forgetEntity: (id) => invoke("memory:forget", id),

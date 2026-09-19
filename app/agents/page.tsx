@@ -105,13 +105,19 @@ export default function AgentsPage() {
   const now = useDoppel((s) => s.now);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [httpUrl, setHttpUrl] = useState("");
+  const [relayUrl, setRelayUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => { connect(); }, [connect]);
   useEffect(() => {
-    doppel.mcpSnippet().then((r: { httpUrl?: string }) => {
+    doppel.mcpSnippet().then((r: { httpUrl?: string; relayUrl?: string | null }) => {
       if (r.httpUrl) setHttpUrl(r.httpUrl);
+      if (r.relayUrl) setRelayUrl(r.relayUrl);
     });
+    const unsub = doppel.onRelay?.((s: { connected: boolean; mcpUrl: string | null }) => {
+      setRelayUrl(s.mcpUrl);
+    });
+    return () => { unsub?.(); };
   }, []);
 
   const activeAgent = AGENTS.find((a) => a.id === openAgent);
@@ -127,39 +133,92 @@ export default function AgentsPage() {
         </p>
 
         {/* Universal MCP URL — always visible */}
-        {httpUrl && !activeAgent && (
+        {(httpUrl || relayUrl) && !activeAgent && (
           <div className="pressed mt-6" style={{ padding: "16px 20px" }}>
-            <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginBottom: 6, fontWeight: 600 }}>
-              MCP Server URL — paste this into any AI agent
-            </p>
-            <div className="flex items-center gap-2">
-              <code
-                style={{
-                  flex: 1,
-                  padding: "10px 14px",
-                  borderRadius: "var(--radius-control)",
-                  background: "var(--bg-base)",
-                  fontSize: 13,
-                  color: "var(--ink)",
-                  fontFamily: "var(--font-mono, monospace)",
-                  fontWeight: 600,
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {httpUrl}
-              </code>
-              <button
-                onClick={() => { navigator.clipboard.writeText(httpUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                className="cursor-pointer shrink-0"
-                style={{
-                  fontSize: "var(--text-sm)",
-                  color: copied ? "#3a3" : "var(--primary)",
-                  background: "none", border: "none", fontWeight: 600,
-                }}
-              >
-                {copied ? "Copied!" : "Copy"}
-              </button>
-            </div>
+            {relayUrl ? (
+              <>
+                <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+                  <span
+                    className="block shrink-0 rounded-full"
+                    style={{ width: 7, height: 7, background: "#3a3", boxShadow: "0 0 6px #3a3" }}
+                  />
+                  <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", fontWeight: 600 }}>
+                    MCP Server URL — works from anywhere
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <code
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      borderRadius: "var(--radius-control)",
+                      background: "var(--bg-base)",
+                      fontSize: 13,
+                      color: "var(--ink)",
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontWeight: 600,
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {relayUrl}
+                  </code>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(relayUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                    className="cursor-pointer shrink-0"
+                    style={{
+                      fontSize: "var(--text-sm)",
+                      color: copied ? "#3a3" : "var(--primary)",
+                      background: "none", border: "none", fontWeight: 600,
+                    }}
+                  >
+                    {copied ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+                <p style={{ fontSize: 10, color: "var(--slate)", marginTop: 6, opacity: 0.7 }}>
+                  Local: {httpUrl}
+                </p>
+              </>
+            ) : httpUrl ? (
+              <>
+                <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+                  <span
+                    className="block shrink-0 rounded-full"
+                    style={{ width: 7, height: 7, background: "var(--slate)", opacity: 0.4 }}
+                  />
+                  <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", fontWeight: 600 }}>
+                    MCP Server URL — local only (sign in to get a public URL)
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <code
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      borderRadius: "var(--radius-control)",
+                      background: "var(--bg-base)",
+                      fontSize: 13,
+                      color: "var(--ink)",
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontWeight: 600,
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {httpUrl}
+                  </code>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(httpUrl); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                    className="cursor-pointer shrink-0"
+                    style={{
+                      fontSize: "var(--text-sm)",
+                      color: copied ? "#3a3" : "var(--primary)",
+                      background: "none", border: "none", fontWeight: 600,
+                    }}
+                  >
+                    {copied ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
         )}
       </section>
@@ -449,7 +508,24 @@ function AgentChat({
                   }}
                 >
                   {task.status === "claimed" && (
-                    <span style={{ color: "#e89b00", fontStyle: "italic" }}>Working on it...</span>
+                    <div className="flex items-center gap-2">
+                      <span style={{ color: "#e89b00", fontStyle: "italic" }}>Working on it...</span>
+                      <button
+                        onClick={() => doppel.inboxReject(task.id)}
+                        className="cursor-pointer"
+                        style={{
+                          fontSize: "var(--text-xs, 11px)",
+                          color: "#e55",
+                          background: "none",
+                          border: "1px solid #e55",
+                          borderRadius: 6,
+                          padding: "2px 8px",
+                          fontWeight: 600,
+                        }}
+                      >
+                        Force stop
+                      </button>
+                    </div>
                   )}
                   {task.status === "done" && task.result && (
                     <span style={{ whiteSpace: "pre-wrap" }}>{task.result}</span>
@@ -484,7 +560,7 @@ function AgentChat({
                   >
                     {task.status === "pending" && "Waiting for your approval"}
                     {task.status === "approved" && `Queued \u2014 open ${agent.name} and ask it to check its Doppel inbox`}
-                    {task.status === "rejected" && "Cancelled"}
+                    {task.status === "rejected" && (task.completedAt ? "Stopped" : "Cancelled")}
                   </span>
                   {task.status === "pending" && (
                     <div className="flex gap-1">
@@ -565,9 +641,10 @@ function SetupPanel({ agent }: { agent: AgentDef }) {
   const [copied, setCopied] = useState<"none" | "json" | "url">("none");
 
   useEffect(() => {
-    doppel.mcpSnippet().then((r: { snippet: unknown; scriptPath: string; httpUrl?: string }) => {
+    doppel.mcpSnippet().then((r: { snippet: unknown; scriptPath: string; httpUrl?: string; relayUrl?: string | null }) => {
       setSnippet(JSON.stringify({ mcpServers: { doppel: r.snippet } }, null, 2));
-      if (r.httpUrl) setHttpUrl(r.httpUrl);
+      // Prefer relay URL (public, works from anywhere) over local
+      setHttpUrl(r.relayUrl || r.httpUrl || "");
     });
   }, [agent.id]);
 

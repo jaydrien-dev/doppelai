@@ -65,10 +65,7 @@ function readBody(req) {
       if (ct.includes("application/x-www-form-urlencoded")) {
         /* OAuth token requests use form-encoded bodies */
         const params = {};
-        for (const pair of raw.split("&")) {
-          const [k, v] = pair.split("=").map(decodeURIComponent);
-          if (k) params[k] = v ?? "";
-        }
+        for (const [k, v] of new URLSearchParams(raw)) params[k] = v;
         return resolve(params);
       }
       try {
@@ -119,11 +116,14 @@ const routes = {
     const link = store.createLink(email);
     console.log(`\n[doppel-id] sign-in link for ${store.normaliseEmail(email)}:\n  ${link}\n`);
 
+    /* Only return the link in the HTTP response when running locally.
+       On a public server without email configured, the link is logged to
+       the console only — returning it would let anyone sign in as anyone. */
+    const isLocal = HOST === "127.0.0.1" || HOST === "localhost";
     return json(res, 200, {
       sent: true,
       emailConfigured: EMAIL_CONFIGURED,
-      /* Shown only while no mail provider is configured. */
-      link: EMAIL_CONFIGURED ? undefined : link,
+      link: (!EMAIL_CONFIGURED && isLocal) ? link : undefined,
     });
   },
 
@@ -345,7 +345,7 @@ const crypto = require("node:crypto");
 
 const oauthClients = new Map();  // clientId → { secret, redirectUris, name }
 const oauthCodes = new Map();    // code → { clientId, accountId, expiresAt, codeChallenge, codeChallengeMethod }
-const oauthTokens = new Map();   // accessToken → { clientId, accountId }
+/* OAuth tokens are persisted in the store (store.oauthTokens) so they survive deploys. */
 
 /* Dynamic Client Registration (RFC 7591) */
 routes["POST /oauth/register"] = async (req, res) => {
@@ -396,14 +396,13 @@ routes["POST /oauth/token"] = async (req, res) => {
   oauthCodes.delete(body.code);
 
   const accessToken = crypto.randomBytes(32).toString("base64url");
-  oauthTokens.set(accessToken, {
-    clientId: codeEntry.clientId,
-    accountId: codeEntry.accountId,
-  });
+  const tokenHash = store.digest(accessToken);
+  store.createOAuthToken(tokenHash, codeEntry.clientId, codeEntry.accountId);
 
   return json(res, 200, {
     access_token: accessToken,
     token_type: "Bearer",
+    expires_in: 86400,
     scope: "mcp",
   });
 };
@@ -485,6 +484,7 @@ async function mcpRelayRoute(req, res, accountId) {
     }, 120_000);
 
     pendingRelay.set(relayId, {
+      accountId,
       resolve: (relayRes) => {
         clearTimeout(timer);
         pendingRelay.delete(relayId);
@@ -547,15 +547,28 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "invalid_request" });
       }
 
-      /* Extract accountId from the Referer or just use the first account.
-         For MCP relay, the accountId is embedded in the MCP URL the user pasted. */
-      const accounts = store._data()?.accounts || [];
-      const account = accounts[0]; // The server typically has one account per user
-      if (!account) {
-        return json(res, 400, { error: "no_account", detail: "No accounts exist on this server yet." });
+      /* Validate redirect_uri against registered client */
+      const client = oauthClients.get(clientId);
+      if (!client) {
+        return json(res, 400, { error: "invalid_client" });
+      }
+      if (!client.redirectUris.length) {
+        return json(res, 400, { error: "invalid_client", detail: "Client has no registered redirect URIs." });
+      }
+      if (!client.redirectUris.includes(redirectUri)) {
+        return json(res, 400, { error: "invalid_redirect_uri" });
       }
 
-      /* Auto-approve: this is the user's own Doppel — no consent screen needed. */
+      /* The caller must prove they own this Doppel account by presenting a
+         valid session token. Without this, anyone who knows the server URL
+         could get an OAuth code for any account. */
+      const found = store.authenticate(bearer(req) || url.searchParams.get("session_token"));
+      if (!found) {
+        return json(res, 401, { error: "not_signed_in", detail: "A valid Doppel session is required to authorize MCP access." });
+      }
+      const account = found.account;
+
+      /* Auto-approve: the user already proved identity via their session. */
       const code = crypto.randomBytes(32).toString("base64url");
       oauthCodes.set(code, {
         clientId,
@@ -577,12 +590,28 @@ const server = http.createServer(async (req, res) => {
     /* MCP relay — /mcp/:accountId */
     const mcpMatch = url.pathname.match(/^\/mcp\/([\w-]+)$/);
     if (mcpMatch) {
-      /* Check OAuth token if present */
-      const authToken = bearer(req);
-      if (authToken && oauthTokens.has(authToken)) {
-        /* Valid OAuth token — proceed */
-      }
       res.setHeader("access-control-expose-headers", "mcp-session-id");
+
+      /* GET probes (discovery) are public — connectors need to check the server exists. */
+      if (req.method === "GET" && !req.headers["mcp-session-id"]) {
+        return await mcpRelayRoute(req, res, mcpMatch[1]);
+      }
+
+      /* All other requests require a valid OAuth token. */
+      const authToken = bearer(req);
+      if (!authToken) {
+        return json(res, 401, { error: "unauthorized", detail: "A valid OAuth token is required." });
+      }
+      const tokenEntry = store.findOAuthToken(store.digest(authToken));
+      if (!tokenEntry) {
+        return json(res, 401, { error: "unauthorized", detail: "Token is invalid or expired." });
+      }
+
+      /* Verify token is scoped to this account. */
+      if (tokenEntry.accountId !== mcpMatch[1]) {
+        return json(res, 403, { error: "forbidden", detail: "Token is not scoped to this account." });
+      }
+
       return await mcpRelayRoute(req, res, mcpMatch[1]);
     }
 
@@ -614,8 +643,7 @@ function start() {
     }
 
     /* Authenticate using the same bearer token as HTTP routes. */
-    const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim()
-                || url.searchParams.get("token");
+    const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
     const found = store.authenticate(token);
     if (!found) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -654,6 +682,17 @@ function start() {
         if (relayClients.get(accountId) === ws) {
           relayClients.delete(accountId);
           console.log(`[relay] device ${found.device.name} disconnected`);
+
+          /* Fail pending relay requests for THIS account so HTTP callers
+             get an immediate error instead of waiting for the 120s timeout. */
+          for (const [rid, entry] of pendingRelay) {
+            if (entry.accountId !== accountId) continue;
+            entry.resolve({
+              status: 502,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ error: "device_disconnected", detail: "The user's Doppel went offline." }),
+            });
+          }
         }
       });
 
