@@ -30,7 +30,8 @@ const store = require("./store");
 const PORT = Number(process.env.PORT ?? process.env.DOPPEL_SERVER_PORT ?? 4319);
 const HOST = process.env.DOPPEL_SERVER_HOST ?? "0.0.0.0";
 const DATA_DIR =
-  process.env.DOPPEL_SERVER_DATA ?? path.join(os.homedir(), ".doppel-identity");
+  process.env.DOPPEL_SERVER_DATA
+  || (os.homedir() ? path.join(os.homedir(), ".doppel-identity") : "/data");
 
 /**
  * Email delivery is not wired up. Rather than pretend, the sign-in link is
