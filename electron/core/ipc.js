@@ -1533,9 +1533,11 @@ function register(opts = {}) {
 
   const mcpScript = path.join(__dirname, "..", "mcp-server.js").replace(/\\/g, "/");
   const mcpSnippet = { command: "node", args: [mcpScript] };
+  const mcpHttpPort = Number(process.env.DOPPEL_MCP_PORT ?? 4320);
+  const mcpHttpUrl = `http://127.0.0.1:${mcpHttpPort}/mcp`;
 
   ipcMain.handle("mcp:snippet", () => {
-    return { snippet: mcpSnippet, scriptPath: mcpScript };
+    return { snippet: mcpSnippet, scriptPath: mcpScript, httpUrl: mcpHttpUrl };
   });
 
   db.subscribe(() => {});

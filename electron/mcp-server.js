@@ -1573,16 +1573,80 @@ server.registerPrompt(
 /*  Start                                                                     */
 /* -------------------------------------------------------------------------- */
 
+const MCP_PORT = Number(process.env.DOPPEL_MCP_PORT ?? 4320);
+const httpMode = process.argv.includes("--http");
+
 async function main() {
   loadVectors();
   loadEmbeddingModel().catch(() => {});
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error(`[doppel-mcp] Server running (v3.0.0). Brain: ${BRAIN_DIR}`);
-  console.error(`[doppel-mcp] Tools: recall, ask, remember, screen_now, recent_activity, known_entities, user_context, patterns, daily_summary, available_dates, focused_recall, episode_timeline, morning_brief, about_user, check_inbox, claim_task, report_result`);
-  console.error(`[doppel-mcp] Resources: doppel://brain/stats, doppel://brain/entities, doppel://activity/today`);
-  console.error(`[doppel-mcp] Prompts: daily-review, project-context, work-patterns`);
+  if (httpMode) {
+    /* ---- Streamable HTTP mode ---- */
+    const http = require("node:http");
+    const { randomUUID } = require("node:crypto");
+    const { StreamableHTTPServerTransport } = require(
+      require("node:path").join(
+        __dirname, "..", "node_modules", "@modelcontextprotocol", "sdk",
+        "dist", "cjs", "server", "streamableHttp.js",
+      ),
+    );
+
+    /* One transport per session, keyed by session ID. */
+    const sessions = new Map();
+
+    const httpServer = http.createServer(async (req, res) => {
+      /* CORS — needed for browser-based connectors */
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
+      res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+      if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+      /* Only serve the /mcp path */
+      const url = new URL(req.url, `http://localhost:${MCP_PORT}`);
+      if (url.pathname !== "/mcp") {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: "Not found. MCP endpoint is /mcp" }));
+        return;
+      }
+
+      const sessionId = req.headers["mcp-session-id"];
+
+      if (sessionId && sessions.has(sessionId)) {
+        /* Existing session — route to its transport */
+        const transport = sessions.get(sessionId);
+        await transport.handleRequest(req, res);
+      } else if (!sessionId && req.method === "POST") {
+        /* New session — initialize */
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) sessions.delete(transport.sessionId);
+        };
+        await server.connect(transport);
+        /* handleRequest will set the session header in the response */
+        await transport.handleRequest(req, res);
+        if (transport.sessionId) sessions.set(transport.sessionId, transport);
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: "Bad request — missing or invalid session" }));
+      }
+    });
+
+    httpServer.listen(MCP_PORT, "127.0.0.1", () => {
+      console.error(`[doppel-mcp] HTTP server running at http://127.0.0.1:${MCP_PORT}/mcp`);
+      console.error(`[doppel-mcp] Brain: ${BRAIN_DIR}`);
+    });
+  } else {
+    /* ---- Stdio mode (default) ---- */
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error(`[doppel-mcp] Server running (v3.0.0). Brain: ${BRAIN_DIR}`);
+    console.error(`[doppel-mcp] Tools: recall, ask, remember, screen_now, recent_activity, known_entities, user_context, patterns, daily_summary, available_dates, focused_recall, episode_timeline, morning_brief, about_user, check_inbox, claim_task, report_result`);
+    console.error(`[doppel-mcp] Resources: doppel://brain/stats, doppel://brain/entities, doppel://activity/today`);
+    console.error(`[doppel-mcp] Prompts: daily-review, project-context, work-patterns`);
+  }
 }
 
 main().catch((err) => {

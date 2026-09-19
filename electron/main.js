@@ -502,6 +502,17 @@ app.whenReady().then(() => {
     createWhisperWindow();
   }
 
+  /* ------------------------------------------------ MCP HTTP server */
+  const { spawn } = require("node:child_process");
+  const mcpScript = path.join(__dirname, "mcp-server.js");
+  const mcpProc = spawn(process.execPath, [mcpScript, "--http"], {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env },
+  });
+  mcpProc.stderr.on("data", (d) => console.log(d.toString().trim()));
+  mcpProc.on("exit", (code) => console.log(`[mcp-http] exited (${code})`));
+  app._mcpProc = mcpProc;
+
   /* --------------------------------------------------------- auto-update */
   if (!isDev) {
     autoUpdater.autoDownload = true;
@@ -526,6 +537,7 @@ app.on("before-quit", () => {
   db.flush();
   try { require("./core/browser").shutdown(); } catch {}
   try { require("./core/addons").shutdown(); } catch {}
+  try { app._mcpProc?.kill(); } catch {}
 });
 
 /**

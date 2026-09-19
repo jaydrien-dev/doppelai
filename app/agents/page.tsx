@@ -528,18 +528,20 @@ function AgentChat({
 
 function SetupPanel({ agent }: { agent: AgentDef }) {
   const [snippet, setSnippet] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [httpUrl, setHttpUrl] = useState("");
+  const [copied, setCopied] = useState<"none" | "json" | "url">("none");
 
   useEffect(() => {
-    doppel.mcpSnippet().then((r) => {
+    doppel.mcpSnippet().then((r: { snippet: unknown; scriptPath: string; httpUrl?: string }) => {
       setSnippet(JSON.stringify({ mcpServers: { doppel: r.snippet } }, null, 2));
+      if (r.httpUrl) setHttpUrl(r.httpUrl);
     });
   }, [agent.id]);
 
-  const copySnippet = () => {
-    navigator.clipboard.writeText(snippet);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copy = (text: string, kind: "json" | "url") => {
+    navigator.clipboard.writeText(text);
+    setCopied(kind);
+    setTimeout(() => setCopied("none"), 2000);
   };
 
   return (
@@ -551,9 +553,47 @@ function SetupPanel({ agent }: { agent: AgentDef }) {
         ))}
       </ol>
 
-      {/* Config snippet */}
+      {/* HTTP URL — for connector-style agents (Claude.ai, etc.) */}
+      {httpUrl && (
+        <div style={{ marginTop: 16 }}>
+          <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginBottom: 6, fontWeight: 600 }}>
+            MCP Server URL (for connectors)
+          </p>
+          <div className="flex items-center gap-2">
+            <code
+              style={{
+                flex: 1,
+                padding: "10px 14px",
+                borderRadius: "var(--radius-control)",
+                background: "var(--bg-base)",
+                fontSize: "var(--text-xs, 11px)",
+                color: "var(--ink)",
+                fontFamily: "var(--font-mono, monospace)",
+              }}
+            >
+              {httpUrl}
+            </code>
+            <button
+              onClick={() => copy(httpUrl, "url")}
+              className="cursor-pointer shrink-0"
+              style={{
+                fontSize: "var(--text-xs, 11px)",
+                color: copied === "url" ? "#3a3" : "var(--primary)",
+                background: "none", border: "none",
+              }}
+            >
+              {copied === "url" ? "Copied!" : "Copy"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* JSON config — for stdio agents (Claude Desktop, Cursor, etc.) */}
       {snippet && (
         <div style={{ marginTop: 16 }}>
+          <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginBottom: 6, fontWeight: 600 }}>
+            JSON Config (for config files)
+          </p>
           <pre
             style={{
               padding: "12px 16px",
@@ -571,15 +611,15 @@ function SetupPanel({ agent }: { agent: AgentDef }) {
             {snippet}
           </pre>
           <button
-            onClick={copySnippet}
+            onClick={() => copy(snippet, "json")}
             className="cursor-pointer mt-2"
             style={{
               fontSize: "var(--text-xs, 11px)",
-              color: copied ? "#3a3" : "var(--primary)",
+              color: copied === "json" ? "#3a3" : "var(--primary)",
               background: "none", border: "none",
             }}
           >
-            {copied ? "Copied!" : "Copy to clipboard"}
+            {copied === "json" ? "Copied!" : "Copy to clipboard"}
           </button>
         </div>
       )}
