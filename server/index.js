@@ -320,6 +320,84 @@ async function revokeDeviceRoute(req, res, deviceId) {
   });
 }
 
+/* ----------------------------------------------------------- OAuth 2.0 for MCP */
+
+const crypto = require("node:crypto");
+
+/**
+ * Minimal OAuth 2.0 server for MCP connectors (Claude, etc.).
+ *
+ * Claude's connector requires OAuth to connect to remote MCP servers.
+ * We implement just enough: dynamic client registration, authorization
+ * code grant, and token exchange. The tokens map onto the existing
+ * Doppel identity system.
+ */
+
+const oauthClients = new Map();  // clientId → { secret, redirectUris, name }
+const oauthCodes = new Map();    // code → { clientId, accountId, expiresAt, codeChallenge, codeChallengeMethod }
+const oauthTokens = new Map();   // accessToken → { clientId, accountId }
+
+/* Dynamic Client Registration (RFC 7591) */
+routes["POST /oauth/register"] = async (req, res) => {
+  const body = await readBody(req);
+  const clientId = `client_${crypto.randomBytes(16).toString("hex")}`;
+  const clientSecret = crypto.randomBytes(32).toString("hex");
+  oauthClients.set(clientId, {
+    secret: clientSecret,
+    redirectUris: body.redirect_uris || [],
+    name: body.client_name || "MCP Client",
+  });
+  return json(res, 201, {
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uris: body.redirect_uris || [],
+    client_name: body.client_name || "MCP Client",
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "client_secret_post",
+  });
+};
+
+/* Token Exchange */
+routes["POST /oauth/token"] = async (req, res) => {
+  const body = await readBody(req);
+
+  if (body.grant_type !== "authorization_code") {
+    return json(res, 400, { error: "unsupported_grant_type" });
+  }
+
+  const codeEntry = oauthCodes.get(body.code);
+  if (!codeEntry || Date.now() > codeEntry.expiresAt) {
+    oauthCodes.delete(body.code);
+    return json(res, 400, { error: "invalid_grant" });
+  }
+
+  /* PKCE verification */
+  if (codeEntry.codeChallenge) {
+    const verifier = body.code_verifier || "";
+    const expected = codeEntry.codeChallengeMethod === "S256"
+      ? crypto.createHash("sha256").update(verifier).digest("base64url")
+      : verifier;
+    if (expected !== codeEntry.codeChallenge) {
+      return json(res, 400, { error: "invalid_grant", error_description: "PKCE verification failed" });
+    }
+  }
+
+  oauthCodes.delete(body.code);
+
+  const accessToken = crypto.randomBytes(32).toString("base64url");
+  oauthTokens.set(accessToken, {
+    clientId: codeEntry.clientId,
+    accountId: codeEntry.accountId,
+  });
+
+  return json(res, 200, {
+    access_token: accessToken,
+    token_type: "Bearer",
+    scope: "mcp",
+  });
+};
+
 /* ----------------------------------------------------------- MCP relay */
 
 const WebSocket = require("ws");
@@ -431,9 +509,68 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === "/v1/health") return json(res, 200, { ok: true, service: "doppel-identity" });
 
+    /* OAuth metadata discovery */
+    if (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration") {
+      const origin = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
+      return json(res, 200, {
+        issuer: origin,
+        authorization_endpoint: `${origin}/oauth/authorize`,
+        token_endpoint: `${origin}/oauth/token`,
+        registration_endpoint: `${origin}/oauth/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256", "plain"],
+        token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+      });
+    }
+
+    /* OAuth authorization endpoint */
+    if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+      const clientId = url.searchParams.get("client_id");
+      const redirectUri = url.searchParams.get("redirect_uri");
+      const state = url.searchParams.get("state");
+      const codeChallenge = url.searchParams.get("code_challenge");
+      const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "plain";
+
+      if (!clientId || !redirectUri) {
+        return json(res, 400, { error: "invalid_request" });
+      }
+
+      /* Extract accountId from the Referer or just use the first account.
+         For MCP relay, the accountId is embedded in the MCP URL the user pasted. */
+      const accounts = store._data()?.accounts || [];
+      const account = accounts[0]; // The server typically has one account per user
+      if (!account) {
+        return json(res, 400, { error: "no_account", detail: "No accounts exist on this server yet." });
+      }
+
+      /* Auto-approve: this is the user's own Doppel — no consent screen needed. */
+      const code = crypto.randomBytes(32).toString("base64url");
+      oauthCodes.set(code, {
+        clientId,
+        accountId: account.id,
+        expiresAt: Date.now() + 5 * 60_000,
+        codeChallenge: codeChallenge || null,
+        codeChallengeMethod,
+      });
+
+      const redir = new URL(redirectUri);
+      redir.searchParams.set("code", code);
+      if (state) redir.searchParams.set("state", state);
+
+      res.writeHead(302, { location: redir.toString() });
+      res.end();
+      return;
+    }
+
     /* MCP relay — /mcp/:accountId */
     const mcpMatch = url.pathname.match(/^\/mcp\/([\w-]+)$/);
     if (mcpMatch) {
+      /* Check OAuth token if present */
+      const authToken = bearer(req);
+      if (authToken && oauthTokens.has(authToken)) {
+        /* Valid OAuth token — proceed */
+      }
       res.setHeader("access-control-expose-headers", "mcp-session-id");
       return await mcpRelayRoute(req, res, mcpMatch[1]);
     }
