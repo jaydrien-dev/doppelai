@@ -4,9 +4,8 @@ import { useEffect, useState } from "react";
 import { doppel, useDoppel } from "@/lib/store";
 import { Mascot } from "@/components/Mascot";
 import { Button, SectionHeading } from "@/components/ui";
-import type { BillingStatus, PlanInfo, TokenPack, TokenEvent } from "@/lib/types";
+import type { BillingStatus, PlanInfo, TokenPack } from "@/lib/types";
 
-/** Human-readable labels for internal action keys. */
 const ACTION_LABELS: Record<string, string> = {
   "vision:look": "Vision look",
   "brain:ask": "Ask Doppel",
@@ -26,7 +25,6 @@ export default function BillingPage() {
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [costs, setCosts] = useState<Record<string, number>>({});
   const [packs, setPacks] = useState<TokenPack[]>([]);
-  const [history, setHistory] = useState<TokenEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [pendingSession, setPendingSession] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -36,7 +34,6 @@ export default function BillingPage() {
     doppel.billingPlans().then(setPlans);
     doppel.billingCosts().then(setCosts);
     doppel.billingTokenPacks().then(setPacks);
-    doppel.billingHistory(30).then(setHistory);
   }, [billing.plan, billing.dailyUsed, billing.tokenBalance]);
 
   const checkout = async (priceId: string) => {
@@ -73,7 +70,6 @@ export default function BillingPage() {
           : `${result.tokens} tokens added to your balance.`,
       );
       doppel.billingStatus().then(setStatus);
-      doppel.billingHistory(30).then(setHistory);
     } else {
       setNote("Payment not confirmed yet. Try again in a moment.");
     }
@@ -290,45 +286,6 @@ export default function BillingPage() {
         </section>
       )}
 
-      {/* -------------------------------------------------- recent activity */}
-      {history.length > 0 && (
-        <section className="mb-12">
-          <SectionHeading count={history.length}>Recent usage</SectionHeading>
-          <div className="raised" style={{ padding: 22 }}>
-            <div className="flex flex-col gap-2">
-              {history.map((evt, i) => {
-                const label = evt.action
-                  .replace("brain:", "")
-                  .replace("agent:", "")
-                  .replace("vision:", "")
-                  .replace("whisper:", "")
-                  .replace("nudge:", "");
-                const when = new Date(evt.date);
-                return (
-                  <div
-                    key={i}
-                    className="flex items-center justify-between"
-                    style={{ fontSize: "var(--text-sm)" }}
-                  >
-                    <span>
-                      {label}
-                      <span
-                        className="ml-3"
-                        style={{ fontSize: "var(--text-micro)", color: "var(--slate)" }}
-                      >
-                        {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </span>
-                    <span style={{ color: "var(--slate)" }}>
-                      -{evt.cost}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-      )}
     </div>
   );
 }

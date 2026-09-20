@@ -187,9 +187,7 @@ function EpisodeCard({
         cursor: "pointer",
         borderLeft: ep.salience >= 0.7
           ? "3px solid var(--primary)"
-          : ep.salience >= 0.4
-            ? "3px solid var(--primary-soft)"
-            : "3px solid transparent",
+          : "3px solid transparent",
       }}
       onClick={() => setExpanded(!expanded)}
     >
@@ -263,16 +261,6 @@ function EpisodeCard({
                 </div>
               )}
 
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <span className="micro-label">
-                  salience {(ep.salience * 100).toFixed(0)}%
-                </span>
-                {ep.boundary !== "none" && (
-                  <span className="micro-label">
-                    boundary: {ep.boundary}
-                  </span>
-                )}
-              </div>
             </motion.div>
           )}
         </div>

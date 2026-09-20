@@ -78,16 +78,6 @@ export default function DenPage() {
         </div>
       </section>
 
-      {/* ------------------------------------------------ quiet status */}
-      {connected && ai.configured && !paused && !seen && !lastEvent && stats.eventsSeen === 0 && (
-        <p
-          className="agent-voice -mt-4 mb-10 text-center"
-          style={{ fontSize: "var(--text-sm)", color: "var(--slate)", opacity: 0.6 }}
-        >
-          Watching quietly. Use your computer normally — I&apos;ll start learning.
-        </p>
-      )}
-
       {/* ------------------------------------------------- morning briefing */}
       {connected && ai.configured && !paused && stats.eventsSeen > 5 && (
         <MorningBriefing />
@@ -106,23 +96,6 @@ export default function DenPage() {
 
       {/* ----------------------------------------------- setup prompts -------- */}
       {needsSetup && <SetupPrompts />}
-
-      {/* ---------------------------------------------------------- daily recap */}
-      {connected && ai.configured && stats.eventsSeen > 10 && (
-        <DailyRecap />
-      )}
-
-      {/* ---------------------------------------------------------------- stats */}
-      {stats.eventsSeen > 0 && (
-        <section>
-          <SectionHeading>What I know</SectionHeading>
-          <div className="pressed" style={{ padding: 28 }}>
-            <p style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-              {voice.den.seen(stats.eventsSeen, stats.sessionsSeen)}
-            </p>
-          </div>
-        </section>
-      )}
     </div>
   );
 }
@@ -285,104 +258,6 @@ function ResumeButton({
 /* ===========================================================================
    Daily Recap — summary of today's work so far
    =========================================================================== */
-
-function DailyRecap() {
-  const narration = useDoppel((s) => s.narration);
-  const now = useDoppel((s) => s.now);
-
-  /* Only compute from today's narration. */
-  const today = new Date().toISOString().slice(0, 10);
-  const todayNarration = narration.filter(
-    (n) => new Date(n.at).toISOString().slice(0, 10) === today,
-  );
-
-  if (todayNarration.length < 5) return null;
-
-  /* App time breakdown — rough estimate from observation timestamps. */
-  const appTime: Record<string, number> = {};
-  for (let i = 0; i < todayNarration.length; i++) {
-    const app = todayNarration[i].app;
-    if (!app) continue;
-    const next = todayNarration[i + 1];
-    const duration = next ? todayNarration[i].at - next.at : 60_000; /* assume 1min for last */
-    appTime[app] = (appTime[app] || 0) + Math.min(duration, 600_000); /* cap at 10min gaps */
-  }
-
-  const sorted = Object.entries(appTime)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
-
-  const totalMs = sorted.reduce((s, [, t]) => s + t, 0);
-  const totalMins = Math.round(totalMs / 60_000);
-
-  if (totalMins < 5) return null;
-
-  const fmtTime = (ms: number) => {
-    const m = Math.round(ms / 60_000);
-    return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
-  };
-
-  return (
-    <section className="mb-14">
-      <SectionHeading>Today so far</SectionHeading>
-      <div className="pressed mt-5" style={{ padding: 24 }}>
-        <p
-          className="agent-voice"
-          style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-        >
-          {todayNarration.length} observations · {totalMins >= 60
-            ? `${Math.floor(totalMins / 60)}h ${totalMins % 60}m tracked`
-            : `${totalMins}m tracked`}
-        </p>
-
-        {sorted.length > 0 && (
-          <div className="mt-4 flex flex-col gap-2">
-            {sorted.map(([app, time]) => {
-              const pct = Math.round((time / totalMs) * 100);
-              return (
-                <div key={app} className="flex items-center gap-3">
-                  <span
-                    style={{
-                      fontSize: "var(--text-xs, 11px)",
-                      color: "var(--ink)",
-                      width: 80,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {appLabel(app)}
-                  </span>
-                  <div
-                    className="flex-1"
-                    style={{
-                      height: 6,
-                      borderRadius: 3,
-                      background: "var(--surface-alt)",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: `${pct}%`,
-                        height: "100%",
-                        borderRadius: 3,
-                        background: "var(--primary)",
-                        opacity: 0.7,
-                        transition: "width 0.6s ease",
-                      }}
-                    />
-                  </div>
-                  <span className="micro-label" style={{ width: 40, textAlign: "right" }}>
-                    {fmtTime(time)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
 
 /* ===========================================================================
    Onboarding Wizard — shown on first launch, replaces entire Den

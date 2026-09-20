@@ -1306,6 +1306,25 @@ function exportBrain() {
   /* Patterns. */
   const patterns = detectPatterns({ minCount: 2, windowDays: 365 });
 
+  /* Vectors — base64-encoded int8 store + meta array. */
+  let vectorData = null;
+  try {
+    const rawBuf = vectors.rawStore();
+    const rawMeta = vectors.rawMeta();
+    if (rawBuf.length > 0) {
+      vectorData = { store: rawBuf.toString("base64"), meta: rawMeta };
+    }
+  } catch { /* vectors not available */ }
+
+  /* Profile. */
+  let profileData = null;
+  try {
+    const pPath = path.join(dir, "profile.json");
+    if (fs.existsSync(pPath)) {
+      profileData = JSON.parse(fs.readFileSync(pPath, "utf8"));
+    }
+  } catch { /* no profile */ }
+
   return {
     exportedAt: new Date().toISOString(),
     version: 1,
@@ -1314,6 +1333,8 @@ function exportBrain() {
     digests: allDigests,
     briefs: allBriefs,
     patterns,
+    vectors: vectorData,
+    profile: profileData,
     stats: {
       totalEpisodes: allEpisodes.length,
       totalEntities: allEntities.length,
@@ -1325,6 +1346,109 @@ function exportBrain() {
           }
         : null,
     },
+  };
+}
+
+/**
+ * Import a previously exported brain, replacing the current one.
+ *
+ * Backs up the current brain directory first, then writes episodes, entities,
+ * digests, briefs, vectors, and profile back to disk and reinitialises.
+ */
+function importBrain(data) {
+  if (!dir) init();
+
+  /* Backup current brain. */
+  const backupDir = `${dir}-backup-${Date.now()}`;
+  try {
+    fs.cpSync(dir, backupDir, { recursive: true });
+  } catch { /* empty brain, nothing to back up */ }
+
+  /* Clear current state. */
+  try {
+    for (const sub of ["episodes", "digests", "briefs"]) {
+      const d = path.join(dir, sub);
+      if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true });
+    }
+    for (const f of ["entities.json", "profile.json"]) {
+      const p = path.join(dir, f);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+  } catch { /* best effort */ }
+
+  /* Recreate directories. */
+  fs.mkdirSync(paths.episodes, { recursive: true });
+  fs.mkdirSync(paths.digests, { recursive: true });
+  fs.mkdirSync(path.join(dir, "briefs"), { recursive: true });
+
+  /* Write episodes — group by day into JSONL files. */
+  if (data.episodes?.length) {
+    const byDay = {};
+    for (const ep of data.episodes) {
+      const day = dayKey(ep.at);
+      (byDay[day] ??= []).push(ep);
+    }
+    for (const [day, eps] of Object.entries(byDay)) {
+      const lines = eps.map((e) => JSON.stringify(e)).join("\n") + "\n";
+      fs.writeFileSync(path.join(paths.episodes, `${day}.jsonl`), lines, "utf8");
+    }
+  }
+
+  /* Write entities. */
+  if (data.entities?.length) {
+    fs.writeFileSync(paths.entities, JSON.stringify(data.entities, null, 2), "utf8");
+  }
+
+  /* Write digests. */
+  if (data.digests?.length) {
+    for (const digest of data.digests) {
+      const { date, ...rest } = digest;
+      if (date) {
+        fs.writeFileSync(path.join(paths.digests, `${date}.json`), JSON.stringify(rest, null, 2), "utf8");
+      }
+    }
+  }
+
+  /* Write briefs. */
+  if (data.briefs?.length) {
+    for (const brief of data.briefs) {
+      const fname = brief.date || new Date(brief.generatedAt || Date.now()).toISOString().slice(0, 10);
+      fs.writeFileSync(path.join(dir, "briefs", `${fname}.json`), JSON.stringify(brief, null, 2), "utf8");
+    }
+  }
+
+  /* Write vectors. */
+  if (data.vectors?.store) {
+    try {
+      const buf = Buffer.from(data.vectors.store, "base64");
+      vectors.loadRaw(buf, data.vectors.meta || []);
+      vectors.flush();
+    } catch { /* vectors import failed, will rebuild over time */ }
+  }
+
+  /* Write profile. */
+  if (data.profile) {
+    fs.writeFileSync(path.join(dir, "profile.json"), JSON.stringify(data.profile, null, 2), "utf8");
+  }
+
+  /* Reinitialise — reloads everything from disk. */
+  entities = new Map();
+  episodes = [];
+  index = new Map();
+  dirty = false;
+  init();
+
+  return {
+    ok: true,
+    imported: {
+      episodes: data.episodes?.length || 0,
+      entities: data.entities?.length || 0,
+      digests: data.digests?.length || 0,
+      briefs: data.briefs?.length || 0,
+      vectors: data.vectors?.meta?.length || 0,
+      profile: !!data.profile,
+    },
+    backup: backupDir,
   };
 }
 
@@ -1349,6 +1473,7 @@ module.exports = {
   getMorningBrief,
   stats,
   exportBrain,
+  importBrain,
   flush,
   wipe,
   paths,

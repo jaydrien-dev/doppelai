@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
@@ -99,7 +100,8 @@ function SignIn({
   const [email, setEmail] = useState("");
   const [link, setLink] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"link" | "password">("link");
+  const [newPassword, setNewPassword] = useState("");
+  const [mode, setMode] = useState<"link" | "password" | "forgot">("link");
   const [busy, setBusy] = useState(false);
   const [shownLink, setShownLink] = useState<string | null>(null);
 
@@ -143,6 +145,31 @@ function SignIn({
 
   return (
     <section>
+      <Link
+        href="/signup"
+        className="raised mb-8 flex flex-wrap items-center justify-between gap-4"
+        style={{ padding: "22px 26px", textDecoration: "none", display: "flex" }}
+      >
+        <div>
+          <p style={{ fontWeight: 600, color: "var(--ink)" }}>New to Doppel?</p>
+          <p style={{ fontSize: "var(--text-sm)", color: "var(--slate)", marginTop: 4 }}>
+            Create an account to sync devices and unlock billing.
+          </p>
+        </div>
+        <span
+          style={{
+            padding: "10px 22px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--primary)",
+            color: "white",
+            fontWeight: 600,
+            fontSize: "var(--text-sm)",
+          }}
+        >
+          Sign up
+        </span>
+      </Link>
+
       <div className="raised" style={{ padding: 30 }}>
         <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
           {voice.account.signInTitle}
@@ -205,7 +232,7 @@ function SignIn({
               </div>
             )}
           </>
-        ) : (
+        ) : mode === "password" ? (
           <>
             <Field
               value={password}
@@ -226,8 +253,80 @@ function SignIn({
                 {voice.account.useLinkInstead}
               </Button>
             </div>
+            <button
+              onClick={() => { setMode("forgot"); setShownLink(null); setLink(""); setNewPassword(""); }}
+              className="mt-4 cursor-pointer"
+              style={{ fontSize: "var(--text-sm)", color: "var(--primary)", background: "none", border: "none", padding: 0 }}
+            >
+              Forgot password?
+            </button>
+          </>
+        ) : (
+          /* ---- forgot password mode ---- */
+          <>
+            <p className="agent-voice mt-5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+              Enter your email above, request a link, then paste it here with your new password.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button variant="primary" onClick={send} disabled={busy || !email.includes("@")}>
+                {busy ? voice.account.sending : "Send reset link"}
+              </Button>
+            </div>
+
+            {shownLink && (
+              <p className="mt-4 break-all font-mono" style={{ fontSize: "var(--text-micro)", color: "var(--slate)" }}>
+                {shownLink}
+              </p>
+            )}
+
+            <Field
+              value={link}
+              onChange={setLink}
+              placeholder="Paste the link here"
+              className="mt-4"
+            />
+            <Field
+              value={newPassword}
+              onChange={setNewPassword}
+              placeholder="New password (at least 10 characters)"
+              type="password"
+              className="mt-4"
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                onClick={async () => {
+                  setBusy(true);
+                  const result = await doppel.resetPassword(link.trim(), newPassword);
+                  setBusy(false);
+                  if (!result?.ok) {
+                    onNote(
+                      result?.error === "too_short" ? "Password must be at least 10 characters."
+                        : result?.error?.startsWith("link_") ? "That link is invalid or expired. Request a new one."
+                        : "Something went wrong.",
+                    );
+                    return;
+                  }
+                  onNote("Password reset. You're signed in.");
+                  onDone();
+                }}
+                disabled={busy || !link.trim() || newPassword.length < 10}
+              >
+                {busy ? "Resetting..." : "Reset password"}
+              </Button>
+              <Button variant="ghost" onClick={() => setMode("password")}>
+                Back to sign in
+              </Button>
+            </div>
           </>
         )}
+
+        <p className="mt-6 text-center" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+          Don't have an account?{" "}
+          <Link href="/signup" style={{ color: "var(--primary)", fontWeight: 500 }}>
+            Create one
+          </Link>
+        </p>
       </div>
     </section>
   );
@@ -432,6 +531,42 @@ function SignedIn({
               disabled={!serverUrl.trim()}
             >
               Update
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {/* ------------------------------------------------------- brain portability */}
+      <section className="mb-14">
+        <SectionHeading>Portable Brain</SectionHeading>
+        <div className="raised" style={{ padding: 26 }}>
+          <p className="agent-voice" style={{ color: "var(--slate)" }}>
+            Your brain is yours. Export it as a single <code>.doppel</code> file — episodes, entities,
+            digests, vectors, profile — and import it on any machine.
+          </p>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button
+              onClick={async () => {
+                const result = await doppel.exportBrain();
+                if (result?.ok && result.file) {
+                  const s = result.stats;
+                  onNote(`Brain exported — ${s?.totalEpisodes ?? 0} episodes, ${s?.totalEntities ?? 0} entities, ${s?.totalDigests ?? 0} digests.`);
+                }
+              }}
+            >
+              Export brain
+            </Button>
+            <Button
+              variant="quiet"
+              onClick={async () => {
+                const result = await doppel.importBrain();
+                if (result?.ok && result.imported) {
+                  const i = result.imported;
+                  onNote(`Brain imported — ${i.episodes} episodes, ${i.entities} entities, ${i.digests} digests, ${i.vectors} vectors.`);
+                }
+              }}
+            >
+              Import brain
             </Button>
           </div>
         </div>

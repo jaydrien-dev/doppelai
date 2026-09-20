@@ -28,25 +28,3 @@ export function minutesSince(then: number, now: number) {
   return Math.max(0, Math.floor((now - then) / MIN));
 }
 
-export function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const rem = Math.round(seconds % 60);
-  if (rem === 0) return `${mins}m`;
-  return `${mins}m ${rem}s`;
-}
-
-export function formatMinutes(mins: number): string {
-  if (mins < 60) return `${mins} min`;
-  const hours = Math.floor(mins / 60);
-  const rem = mins % 60;
-  if (rem === 0) return `${hours}h`;
-  return `${hours}h ${rem}m`;
-}
-
-/** Start of the UTC week (Monday) containing `t`. */
-export function weekStart(t: number): number {
-  const d = new Date(t);
-  const day = (d.getUTCDay() + 6) % 7;
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - day * DAY;
-}

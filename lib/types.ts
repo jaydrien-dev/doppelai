@@ -344,6 +344,7 @@ export interface DoppelSnapshot {
   nudgeSettings: { enabled: boolean };
   guide: GuideWalkthrough;
   inbox: InboxTask[];
+  workflows: Workflow[];
 }
 
 /* --------------------------------------------------------------------------
@@ -403,6 +404,58 @@ export interface InboxTask {
   /** The agent's response when done. */
   result: string | null;
   completedAt: number | null;
+  /** If this task is part of a workflow. */
+  workflowId?: string;
+  workflowStep?: number;
+}
+
+/* --------------------------------------------------------------------------
+   User Profile — who the user is, extracted from observation
+   -------------------------------------------------------------------------- */
+
+export interface UserProfile {
+  updatedAt: number;
+  observationsProcessed: number;
+  communication: { tone: string; patterns: string[]; vocabulary: string[] };
+  priorities: { label: string; evidence: string; confidence: number }[];
+  expertise: { domain: string; depth: "surface" | "working" | "deep"; evidence: string }[];
+  preferences: { label: string; evidence: string }[];
+  decisions: { pattern: string; evidence: string }[];
+  portrait: string;
+}
+
+/* --------------------------------------------------------------------------
+   Workflows — cross-agent orchestration
+   -------------------------------------------------------------------------- */
+
+export type WorkflowStepStatus = "pending" | "queued" | "claimed" | "done" | "failed" | "skipped";
+
+export interface WorkflowStep {
+  id: string;
+  index: number;
+  instruction: string;
+  target: string;
+  status: WorkflowStepStatus;
+  inputContext: string | null;
+  result: string | null;
+  agent: string | null;
+  claimedAt: number | null;
+  completedAt: number | null;
+}
+
+export type WorkflowStatus = "running" | "paused" | "done" | "failed" | "aborted";
+
+export interface Workflow {
+  id: string;
+  createdAt: number;
+  status: WorkflowStatus;
+  title: string;
+  source: "user" | "agent" | "system";
+  sourceAgent: string | null;
+  steps: WorkflowStep[];
+  currentStep: number;
+  completedAt: number | null;
+  onFailure: "abort" | "skip" | "retry";
 }
 
 /* --------------------------------------------------------------------------

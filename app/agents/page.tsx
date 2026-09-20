@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
-import type { InboxTask } from "@/lib/store";
+import type { InboxTask, Workflow } from "@/lib/store";
+import type { WorkflowStep } from "@/lib/types";
 import { ago } from "@/lib/time";
 import { SectionHeading, Button } from "@/components/ui";
 
@@ -102,6 +103,7 @@ const AGENTS: AgentDef[] = [
 export default function AgentsPage() {
   const connect = useDoppel((s) => s.connect);
   const inbox = useDoppel((s) => s.inbox);
+  const workflows = useDoppel((s) => s.workflows);
   const now = useDoppel((s) => s.now);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [httpUrl, setHttpUrl] = useState("");
@@ -247,6 +249,7 @@ export default function AgentsPage() {
             exit={{ opacity: 0, x: 20 }}
             transition={{ duration: 0.2, ease: [0.22, 0.61, 0.36, 1] }}
           >
+            <WorkflowSection workflows={workflows} now={now} />
             <AgentList
               agents={AGENTS}
               inbox={inbox}
@@ -733,6 +736,299 @@ function SetupPanel({ agent }: { agent: AgentDef }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/* =========================================================================
+   Workflow Section — active cross-agent workflows
+   ========================================================================= */
+
+function WorkflowSection({ workflows, now }: { workflows: Workflow[]; now: number }) {
+  const [creating, setCreating] = useState(false);
+
+  const active = workflows.filter((w) => w.status === "running" || w.status === "paused");
+  const recent = workflows
+    .filter((w) => w.status !== "running" && w.status !== "paused")
+    .slice(0, 3);
+  const shown = [...active, ...recent];
+
+  return (
+    <section className="mb-10">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+        <SectionHeading>Workflows</SectionHeading>
+        {!creating && (
+          <Button size="sm" onClick={() => setCreating(true)}>New workflow</Button>
+        )}
+      </div>
+
+      {creating && (
+        <WorkflowCreator
+          onCreated={() => setCreating(false)}
+          onCancel={() => setCreating(false)}
+        />
+      )}
+
+      {shown.length > 0 && (
+        <div className="flex flex-col gap-3 mt-4">
+          {shown.map((wf) => (
+            <WorkflowCard key={wf.id} workflow={wf} now={now} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const AGENT_TARGETS = ["any", "Claude Desktop", "Claude Code", "Cursor", "VS Code", "Windsurf", "ChatGPT Desktop", "Grok"];
+
+function WorkflowCreator({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
+  const [title, setTitle] = useState("");
+  const [steps, setSteps] = useState([{ instruction: "", target: "any" }, { instruction: "", target: "any" }]);
+  const [onFailure, setOnFailure] = useState<"abort" | "skip" | "retry">("abort");
+
+  const addStep = () => setSteps([...steps, { instruction: "", target: "any" }]);
+  const removeStep = (i: number) => {
+    if (steps.length <= 2) return;
+    setSteps(steps.filter((_, idx) => idx !== i));
+  };
+  const updateStep = (i: number, field: "instruction" | "target", value: string) => {
+    const next = [...steps];
+    next[i] = { ...next[i], [field]: value };
+    setSteps(next);
+  };
+
+  const canSubmit = title.trim() && steps.every((s) => s.instruction.trim());
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    await doppel.workflowCreate(
+      title.trim(),
+      steps.map((s) => ({ instruction: s.instruction.trim(), target: s.target })),
+      onFailure,
+    );
+    onCreated();
+  };
+
+  return (
+    <div className="raised mb-4" style={{ padding: "20px 24px", borderRadius: "var(--radius-card-sm)" }}>
+      {/* Title */}
+      <input
+        type="text"
+        placeholder="Workflow title"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        style={{
+          width: "100%", border: "none", outline: "none",
+          background: "var(--surface-alt)", borderRadius: 6,
+          padding: "10px 14px", fontSize: "var(--text-sm)",
+          marginBottom: 12, color: "var(--ink)",
+        }}
+      />
+
+      {/* Steps */}
+      <div className="flex flex-col gap-2 mb-3">
+        {steps.map((step, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <span style={{
+              width: 22, height: 22, borderRadius: "50%",
+              background: "var(--surface-alt)", display: "flex",
+              alignItems: "center", justifyContent: "center",
+              fontSize: 11, fontWeight: 700, color: "var(--slate)", flexShrink: 0, marginTop: 6,
+            }}>
+              {i + 1}
+            </span>
+            <div className="flex-1 flex gap-2">
+              <input
+                type="text"
+                placeholder={`Step ${i + 1} instruction`}
+                value={step.instruction}
+                onChange={(e) => updateStep(i, "instruction", e.target.value)}
+                style={{
+                  flex: 1, border: "none", outline: "none",
+                  background: "var(--surface-alt)", borderRadius: 6,
+                  padding: "8px 12px", fontSize: "var(--text-xs, 11px)", color: "var(--ink)",
+                }}
+              />
+              <select
+                value={step.target}
+                onChange={(e) => updateStep(i, "target", e.target.value)}
+                style={{
+                  width: 120, border: "none", outline: "none",
+                  background: "var(--surface-alt)", borderRadius: 6,
+                  padding: "8px 10px", fontSize: "var(--text-xs, 11px)",
+                  color: "var(--slate)", cursor: "pointer",
+                }}
+              >
+                {AGENT_TARGETS.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            {steps.length > 2 && (
+              <button
+                onClick={() => removeStep(i)}
+                style={{
+                  background: "none", border: "none", color: "var(--slate)",
+                  cursor: "pointer", fontSize: 16, padding: "4px 6px", marginTop: 4,
+                }}
+              >
+                &times;
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={addStep}
+        style={{
+          background: "none", border: "none", color: "var(--primary)",
+          cursor: "pointer", fontSize: "var(--text-xs, 11px)", padding: "4px 0", marginBottom: 12,
+        }}
+      >
+        + Add step
+      </button>
+
+      {/* Footer */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}>On failure:</span>
+          <select
+            value={onFailure}
+            onChange={(e) => setOnFailure(e.target.value as "abort" | "skip" | "retry")}
+            style={{
+              border: "none", outline: "none", background: "var(--surface-alt)",
+              borderRadius: 4, padding: "4px 8px", fontSize: "var(--text-xs, 11px)",
+              color: "var(--slate)", cursor: "pointer",
+            }}
+          >
+            <option value="abort">Abort</option>
+            <option value="skip">Skip</option>
+            <option value="retry">Wait for retry</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+          <Button variant="primary" size="sm" onClick={submit} disabled={!canSubmit}>Start</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowCard({ workflow: wf, now }: { workflow: Workflow; now: number }) {
+  const doneSteps = wf.steps.filter((s: WorkflowStep) => s.status === "done" || s.status === "skipped").length;
+  const progress = wf.steps.length > 0 ? (doneSteps / wf.steps.length) * 100 : 0;
+  const isRunning = wf.status === "running";
+  const currentStep = wf.steps[wf.currentStep];
+
+  const statusColor: Record<string, string> = {
+    running: "#e89b00",
+    paused: "var(--slate)",
+    done: "var(--primary)",
+    failed: "#e55",
+    aborted: "#e55",
+  };
+
+  return (
+    <div
+      className="raised"
+      style={{
+        padding: "16px 20px",
+        borderRadius: "var(--radius-card-sm)",
+        borderLeft: `3px solid ${statusColor[wf.status] || "var(--surface-alt)"}`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <p style={{ fontSize: "var(--text-sm)", fontWeight: 600 }}>{wf.title}</p>
+            <span style={{
+              fontSize: 10, fontWeight: 700,
+              color: statusColor[wf.status],
+              textTransform: "uppercase",
+            }}>
+              {wf.status}
+            </span>
+          </div>
+
+          {/* Progress bar */}
+          <div style={{
+            width: "100%", height: 4, borderRadius: 2,
+            background: "var(--surface-alt)", marginBottom: 8,
+          }}>
+            <div style={{
+              width: `${progress}%`, height: "100%", borderRadius: 2,
+              background: wf.status === "failed" ? "#e55" : "var(--primary)",
+              transition: "width 0.3s ease",
+            }} />
+          </div>
+
+          {/* Steps */}
+          <div style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}>
+            {wf.steps.map((step: WorkflowStep, i: number) => {
+              const stepStatusIcon: Record<string, string> = {
+                pending: "\u25CB",
+                queued: "\u25D4",
+                claimed: "\u25D4",
+                done: "\u2713",
+                failed: "\u2717",
+                skipped: "\u2013",
+              };
+              const isCurrent = i === wf.currentStep && isRunning;
+              return (
+                <div
+                  key={step.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 6,
+                    padding: "2px 0",
+                    color: isCurrent ? "var(--ink)" : step.status === "done" ? "var(--primary)" : "var(--slate)",
+                    fontWeight: isCurrent ? 600 : 400,
+                  }}
+                >
+                  <span style={{ width: 14, textAlign: "center", flexShrink: 0 }}>
+                    {stepStatusIcon[step.status] || "\u25CB"}
+                  </span>
+                  <span className="min-w-0">
+                    {step.instruction.slice(0, 80)}{step.instruction.length > 80 ? "\u2026" : ""}
+                    {step.target !== "any" && (
+                      <span style={{ color: "var(--slate)", fontWeight: 400 }}> \u2192 {step.target}</span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Current step detail for running workflows */}
+          {isRunning && currentStep && currentStep.status === "claimed" && (
+            <p style={{ fontSize: "var(--text-xs, 11px)", color: "#e89b00", marginTop: 4 }}>
+              Step {wf.currentStep + 1} claimed by {currentStep.agent || "agent"}{" "}
+              {currentStep.claimedAt ? ago(currentStep.claimedAt, now) : ""}
+            </p>
+          )}
+        </div>
+
+        {/* Abort button for running workflows */}
+        {isRunning && (
+          <button
+            onClick={() => doppel.workflowAbort(wf.id)}
+            style={{
+              fontSize: "var(--text-xs, 11px)",
+              color: "#e55",
+              border: "1px solid #e55",
+              borderRadius: 6,
+              padding: "4px 10px",
+              background: "transparent",
+              cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            Abort
+          </button>
+        )}
+      </div>
     </div>
   );
 }

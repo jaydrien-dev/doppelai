@@ -73,7 +73,10 @@ contextBridge.exposeInMainWorld("doppel", {
   morningBrief: () => invoke("brain:morningBrief"),
   morningBriefCached: () => invoke("brain:morningBriefCached"),
   exportBrain: () => invoke("brain:export"),
+  importBrain: () => invoke("brain:import"),
   wipeBrain: () => invoke("brain:wipe"),
+  userProfile: () => invoke("profile:get"),
+  generateProfile: () => invoke("profile:generate"),
   ingestDocument: (filePath) => invoke("brain:ingest", filePath),
   ingestSupported: () => invoke("brain:ingestSupported"),
 
@@ -88,6 +91,8 @@ contextBridge.exposeInMainWorld("doppel", {
   /* the account */
   requestLink: (email) => invoke("account:requestLink", email),
   verifyLink: (token) => invoke("account:verifyLink", token),
+  register: (email, password) => invoke("account:register", { email, password }),
+  resetPassword: (token, password) => invoke("account:resetPassword", { token, password }),
   signInWithPassword: (email, password) => invoke("account:password", { email, password }),
   setAccountPassword: (password) => invoke("account:setPassword", password),
   accountOverview: () => invoke("account:overview"),
@@ -123,6 +128,10 @@ contextBridge.exposeInMainWorld("doppel", {
   nudgeSetEnabled: (on) => invoke("nudge:setEnabled", on),
 
   /* inbox — task queue for external agents */
+  workflowList: () => invoke("workflow:list"),
+  workflowCreate: (title, steps, onFailure) => invoke("workflow:create", title, steps, onFailure),
+  workflowAbort: (id) => invoke("workflow:abort", id),
+
   inboxList: () => invoke("inbox:list"),
   inboxCreate: (instruction, autoApprove, target) => invoke("inbox:create", instruction, autoApprove, target),
   inboxApprove: (id) => invoke("inbox:approve", id),

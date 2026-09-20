@@ -232,4 +232,21 @@ const stats = () => ({
   unavailable,
 });
 
-module.exports = { init, embed, add, search, flush, forget, wipe, stats, ready, DIMS, MODEL };
+/** Raw store buffer (int8) — for brain export. */
+const rawStore = () => Buffer.from(store.buffer, store.byteOffset, count * DIMS);
+
+/** Raw metadata array — for brain export. */
+const rawMeta = () => meta.slice(0, count);
+
+/** Bulk-load vectors + metadata from an import. */
+function loadRaw(buf, metaArr) {
+  const imported = new Int8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  const importCount = Math.min(metaArr.length, Math.floor(imported.length / DIMS));
+  store = new Int8Array(importCount * DIMS);
+  store.set(imported.subarray(0, importCount * DIMS));
+  meta = metaArr.slice(0, importCount);
+  count = importCount;
+  dirty = true;
+}
+
+module.exports = { init, embed, add, search, flush, forget, wipe, stats, ready, rawStore, rawMeta, loadRaw, DIMS, MODEL };

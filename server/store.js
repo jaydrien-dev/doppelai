@@ -240,11 +240,12 @@ function sessionsFor(accountId) {
 }
 
 /** Sign out everywhere, optionally sparing the device asking. */
-function revokeAllSessions(accountId, { exceptDeviceId = null } = {}) {
+function revokeAllSessions(accountId, { exceptDeviceId = null, onlyDeviceId = null } = {}) {
   let count = 0;
   for (const session of data.sessions) {
     if (session.accountId !== accountId || session.revokedAt) continue;
     if (exceptDeviceId && session.deviceId === exceptDeviceId) continue;
+    if (onlyDeviceId && session.deviceId !== onlyDeviceId) continue;
     session.revokedAt = Date.now();
     count += 1;
   }

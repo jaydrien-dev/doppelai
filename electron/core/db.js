@@ -374,6 +374,7 @@ function publicState() {
     narration: (s.narration ?? []).slice(0, 40),
     recentEvents: s.events.slice(-40).reverse(),
     inbox: readInbox(),
+    workflows: readWorkflows(),
   };
 }
 
@@ -381,6 +382,14 @@ function readInbox() {
   try {
     const inboxFile = path.join(dir ?? app.getPath("userData"), "inbox.json");
     const raw = JSON.parse(fs.readFileSync(inboxFile, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+}
+
+function readWorkflows() {
+  try {
+    const wfFile = path.join(dir ?? app.getPath("userData"), "workflows.json");
+    const raw = JSON.parse(fs.readFileSync(wfFile, "utf8"));
     return Array.isArray(raw) ? raw : [];
   } catch { return []; }
 }

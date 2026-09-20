@@ -24,6 +24,8 @@ import type {
   PlanInfo,
   TokenEvent,
   TokenPack,
+  UserProfile,
+  Workflow,
 } from "./types";
 
 /**
@@ -64,6 +66,14 @@ export interface DoppelBridge {
   /* the account */
   requestLink: (email: string) => Promise<{ ok: boolean; error?: string; link?: string }>;
   verifyLink: (token: string) => Promise<{ ok: boolean; error?: string }>;
+  register: (
+    email: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  resetPassword: (
+    token: string,
+    password: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   signInWithPassword: (
     email: string,
     password: string,
@@ -96,6 +106,11 @@ export interface DoppelBridge {
   inboxReject: (id: string) => Promise<{ ok: boolean }>;
   inboxRetry: (id: string) => Promise<{ ok: boolean }>;
   inboxClear: () => Promise<{ ok: boolean }>;
+
+  /* workflows */
+  workflowList: () => Promise<Workflow[]>;
+  workflowCreate: (title: string, steps: { instruction: string; target: string }[], onFailure?: string) => Promise<Workflow>;
+  workflowAbort: (id: string) => Promise<{ ok: boolean }>;
 
   /* guide — Clicky-style walkthroughs */
   guideFindElement: (description: string) => Promise<{ ok: boolean; screenX?: number; screenY?: number; label?: string }>;
@@ -186,7 +201,10 @@ export interface DoppelBridge {
   brainForget: (id: string) => Promise<unknown>;
   consolidate: (scope: "hour" | "day") => Promise<{ ok: boolean; reason?: string }>;
   exportBrain: () => Promise<{ ok: boolean; file?: string; reason?: string; detail?: string; stats?: { totalEpisodes: number; totalEntities: number; totalDigests: number } }>;
+  importBrain: () => Promise<{ ok: boolean; reason?: string; detail?: string; imported?: { episodes: number; entities: number; digests: number; briefs: number; vectors: number; profile: boolean }; backup?: string }>;
   wipeBrain: () => Promise<unknown>;
+  userProfile: () => Promise<UserProfile | null>;
+  generateProfile: () => Promise<{ ok: boolean; profile?: UserProfile; reason?: string; detail?: string }>;
   ingestDocument: (filePath?: string) => Promise<{ ok: boolean; episodes?: number; files?: string[]; title?: string; detail?: string }>;
   ingestSupported: () => Promise<string[]>;
 
@@ -267,6 +285,7 @@ const emptySnapshot = (): DoppelSnapshot => ({
   nudgeSettings: { enabled: true },
   guide: { active: false },
   inbox: [],
+  workflows: [],
   devices: [],
   stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0 },
   addons: { installed: {} },
@@ -411,7 +430,12 @@ export const doppel = {
     api()?.consolidate(scope) ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
   exportBrain: () =>
     api()?.exportBrain() ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
+  importBrain: () =>
+    api()?.importBrain() ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
   wipeBrain: () => api()?.wipeBrain(),
+  userProfile: () => api()?.userProfile() ?? Promise.resolve(null),
+  generateProfile: () =>
+    api()?.generateProfile() ?? Promise.resolve({ ok: false, reason: "no-bridge" }),
   ingestDocument: (filePath?: string) =>
     api()?.ingestDocument(filePath) ?? Promise.resolve({ ok: false, detail: "Not connected." }),
   ingestSupported: () => api()?.ingestSupported() ?? Promise.resolve([]),
@@ -421,6 +445,10 @@ export const doppel = {
     api()?.requestLink(email) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
   verifyLink: (token: string) =>
     api()?.verifyLink(token) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
+  register: (email: string, password: string) =>
+    api()?.register(email, password) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
+  resetPassword: (token: string, password: string) =>
+    api()?.resetPassword(token, password) ?? Promise.resolve({ ok: false, error: "no-bridge" }),
   signInWithPassword: (email: string, password: string) =>
     api()?.signInWithPassword(email, password) ??
     Promise.resolve({ ok: false, error: "no-bridge" }),
@@ -489,6 +517,14 @@ export const doppel = {
   inboxClear: () =>
     api()?.inboxClear() ?? Promise.resolve({ ok: false }),
 
+  /* workflows */
+  workflowList: () =>
+    api()?.workflowList() ?? Promise.resolve([]),
+  workflowCreate: (title: string, steps: { instruction: string; target: string }[], onFailure?: string) =>
+    api()?.workflowCreate(title, steps, onFailure) ?? Promise.resolve({ id: "", createdAt: 0, status: "failed" as const, title, source: "user" as const, sourceAgent: null, steps: [], currentStep: 0, completedAt: null, onFailure: "abort" as const }),
+  workflowAbort: (id: string) =>
+    api()?.workflowAbort(id) ?? Promise.resolve({ ok: false }),
+
   /* security / biometric */
   securityAvailable: () =>
     api()?.securityAvailable() ?? Promise.resolve({ available: false }),
@@ -555,4 +591,5 @@ export type {
   BrainPattern,
   BrainStats,
   ContextPack,
+  Workflow,
 };

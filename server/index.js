@@ -116,14 +116,13 @@ const routes = {
     const link = store.createLink(email);
     console.log(`\n[doppel-id] sign-in link for ${store.normaliseEmail(email)}:\n  ${link}\n`);
 
-    /* Only return the link in the HTTP response when running locally.
-       On a public server without email configured, the link is logged to
-       the console only — returning it would let anyone sign in as anyone. */
-    const isLocal = HOST === "127.0.0.1" || HOST === "localhost";
+    /* Return the link in the response when email isn't configured —
+       otherwise there's no way to receive it. Once email delivery is
+       wired up, remove this fallback. */
     return json(res, 200, {
       sent: true,
       emailConfigured: EMAIL_CONFIGURED,
-      link: (!EMAIL_CONFIGURED && isLocal) ? link : undefined,
+      link: EMAIL_CONFIGURED ? undefined : link,
     });
   },
 
@@ -146,6 +145,31 @@ const routes = {
       account: { id: account.id, email: account.email, createdAt: account.createdAt },
       device: publicDevice(device, device.id),
       hasPassword: Boolean(account.password),
+    });
+  },
+
+  /* Create a new account with email + password in one step. */
+  "POST /v1/auth/register": async (req, res) => {
+    const { email, password, deviceName, deviceKind, platform } = await readBody(req);
+    if (!validEmail(email)) return json(res, 400, { error: "bad_email" });
+    if (!password || String(password).length < 10) {
+      return json(res, 400, { error: "password_too_short", minimum: 10 });
+    }
+
+    const existing = store.accountByEmail(email);
+    if (existing) return json(res, 409, { error: "already_exists" });
+
+    const account = store.createAccount(email);
+    store.setPassword(account.id, String(password));
+
+    const device = store.pairDevice(account.id, { name: deviceName, kind: deviceKind, platform });
+    const { token } = store.createSession(account.id, device.id);
+
+    return json(res, 200, {
+      token,
+      account: { id: account.id, email: account.email, createdAt: account.createdAt },
+      device: publicDevice(device, device.id),
+      hasPassword: true,
     });
   },
 
@@ -182,6 +206,30 @@ const routes = {
     return json(res, 200, { ok: true });
   },
 
+  /** Reset password: verify a magic link token + set new password in one step. */
+  "POST /v1/auth/password/reset": async (req, res) => {
+    const { token, password, deviceName, deviceKind, platform } = await readBody(req);
+    if (!password || String(password).length < 10) {
+      return json(res, 400, { error: "too_short", minimum: 10 });
+    }
+    const used = store.consumeLink(String(token ?? "").trim());
+    if (!used.ok) return json(res, 400, { error: `link_${used.reason}` });
+
+    const account = store.accountByEmail(used.email);
+    if (!account) return json(res, 400, { error: "no_account" });
+
+    store.setPassword(account.id, String(password));
+    const device = store.pairDevice(account.id, { name: deviceName, kind: deviceKind, platform });
+    const sessionToken = store.createSession(account.id, device.id).token;
+
+    return json(res, 200, {
+      token: sessionToken,
+      account: { id: account.id, email: account.email, createdAt: account.createdAt },
+      device: publicDevice(device, device.id),
+      hasPassword: true,
+    });
+  },
+
   /* Everything the account holds, for the account home. */
   "GET /v1/account": async (req, res) => {
     const found = requireAuth(req, res);
@@ -207,6 +255,17 @@ const routes = {
     const found = requireAuth(req, res);
     if (!found) return undefined;
     return json(res, 200, { ok: true, at: Date.now() });
+  },
+
+  "POST /v1/auth/signout": async (req, res) => {
+    const found = requireAuth(req, res);
+    if (!found) return undefined;
+    // Revoke only this device's sessions
+    const revoked = store.revokeAllSessions(found.account.id, {
+      exceptDeviceId: null,
+      onlyDeviceId: found.device.id,
+    });
+    return json(res, 200, { ok: true, revoked });
   },
 
   "POST /v1/auth/signout-all": async (req, res) => {

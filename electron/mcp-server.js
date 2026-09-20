@@ -479,6 +479,82 @@ function writeInbox(tasks) {
   fs.writeFileSync(INBOX_FILE, JSON.stringify(tasks, null, 2));
 }
 
+const WORKFLOW_FILE = path.join(DATA_DIR, "workflows.json");
+
+function readWorkflows() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(WORKFLOW_FILE, "utf8"));
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+}
+
+function writeWorkflows(wfs) {
+  fs.writeFileSync(WORKFLOW_FILE, JSON.stringify(wfs, null, 2));
+}
+
+function advanceWorkflow(workflowId, stepResult, success) {
+  const wfs = readWorkflows();
+  const wf = wfs.find((w) => w.id === workflowId);
+  if (!wf || wf.status !== "running") return null;
+
+  const current = wf.steps[wf.currentStep];
+  if (current) {
+    current.status = success ? "done" : "failed";
+    current.result = stepResult;
+    current.completedAt = Date.now();
+  }
+
+  if (!success) {
+    if (wf.onFailure === "abort") {
+      wf.status = "failed";
+      wf.completedAt = Date.now();
+      writeWorkflows(wfs);
+      return wf;
+    }
+    if (wf.onFailure === "skip") {
+      current.status = "skipped";
+    }
+    if (wf.onFailure === "retry") {
+      writeWorkflows(wfs);
+      return wf;
+    }
+  }
+
+  const nextIdx = wf.currentStep + 1;
+  if (nextIdx >= wf.steps.length) {
+    wf.status = "done";
+    wf.completedAt = Date.now();
+    writeWorkflows(wfs);
+    return wf;
+  }
+
+  wf.currentStep = nextIdx;
+  const next = wf.steps[nextIdx];
+  next.status = "queued";
+  next.inputContext = stepResult;
+  writeWorkflows(wfs);
+
+  /* Queue next step as inbox task. */
+  const tasks = readInbox();
+  tasks.unshift({
+    id: next.id,
+    createdAt: Date.now(),
+    status: "approved",
+    instruction: next.instruction + (stepResult ? `\n\n--- Context from previous step ---\n${stepResult}` : ""),
+    source: "system",
+    target: next.target,
+    agent: null,
+    claimedAt: null,
+    result: null,
+    completedAt: null,
+    workflowId,
+    workflowStep: nextIdx,
+  });
+  writeInbox(tasks);
+
+  return wf;
+}
+
 function formatTask(t) {
   const time = new Date(t.createdAt).toLocaleString();
   const parts = [`[${time}] (${t.status})`];
@@ -1302,6 +1378,111 @@ server.registerTool(
 );
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
+/*  PROFILE TOOLS — who the user is                                          */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+/* --- Tool: user_profile -------------------------------------------------- */
+
+server.registerTool(
+  "user_profile",
+  {
+    description:
+      "Get the structured user profile that Doppel has built from observation — communication style, decision patterns, priorities, expertise, preferences, and a one-paragraph portrait. Returns null if not enough data has been collected yet (needs 50+ observations).",
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const profileFile = path.join(BRAIN_DIR, "profile.json");
+    try {
+      if (!fs.existsSync(profileFile)) {
+        return { content: [{ type: "text", text: "No profile yet. Doppel needs at least 50 observations to build a user profile." }] };
+      }
+      const profile = JSON.parse(fs.readFileSync(profileFile, "utf8"));
+      return { content: [{ type: "text", text: JSON.stringify(profile, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not read profile: ${err.message}` }], isError: true };
+    }
+  },
+);
+
+/* --- Tool: respond_as_user ----------------------------------------------- */
+
+server.registerTool(
+  "respond_as_user",
+  {
+    description:
+      "Draft a response AS the user, in their voice and style, based on their profile and relevant memories. Provide context (e.g. an email to respond to, a message to reply to) and the medium (email, slack, text). Doppel will use the user's profile and memories to craft a response that sounds like them.",
+    inputSchema: z.object({
+      context: z.string().describe("The message or situation to respond to."),
+      medium: z.string().default("email").describe("The medium: email, slack, text, tweet, etc."),
+      additionalInstructions: z.string().optional().describe("Any extra guidance for the response."),
+    }),
+  },
+  async ({ context, medium, additionalInstructions }) => {
+    const client = getClaudeClient();
+    if (!client) {
+      return { content: [{ type: "text", text: "No API key configured. Cannot draft a response." }], isError: true };
+    }
+
+    /* Load profile. */
+    let profile = null;
+    const profileFile = path.join(BRAIN_DIR, "profile.json");
+    try {
+      if (fs.existsSync(profileFile)) {
+        profile = JSON.parse(fs.readFileSync(profileFile, "utf8"));
+      }
+    } catch { /* no profile */ }
+
+    if (!profile) {
+      return { content: [{ type: "text", text: "No user profile yet. Doppel needs at least 50 observations to build a profile before it can respond as the user." }], isError: true };
+    }
+
+    /* Pull relevant memories for context. */
+    let memoryContext = "";
+    if (vectorCount > 0) {
+      const hits = searchVectors(context, 10, 0.15);
+      if (hits.length > 0) {
+        const episodes = readEpisodes(500);
+        const epMap = {};
+        for (const ep of episodes) epMap[ep.id] = ep;
+        const relevant = hits
+          .map((h) => epMap[h.id])
+          .filter(Boolean)
+          .map((ep) => `[${new Date(ep.at).toISOString().slice(0, 16)}] ${ep.app || "?"}: ${ep.activity || ""} ${ep.detail || ""}`)
+          .join("\n");
+        if (relevant) memoryContext = `\n\nRelevant memories:\n${relevant}`;
+      }
+    }
+
+    const system = `You are ghostwriting a response for a specific person. You must write AS them, not as an AI.
+
+Here is their profile:
+${JSON.stringify(profile, null, 2)}
+${memoryContext}
+
+Rules:
+- Match their communication tone exactly
+- Use their vocabulary and sentence patterns
+- Match the formality level appropriate for ${medium}
+- Do not add disclaimers about being AI
+- Write ONLY the response text, nothing else
+${additionalInstructions ? `\nAdditional instructions: ${additionalInstructions}` : ""}`;
+
+    try {
+      const response = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1000,
+        system,
+        messages: [{ role: "user", content: `Draft a ${medium} response to this:\n\n${context}` }],
+      });
+      const text = response.content.map((b) => b.text || "").join("");
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Could not generate response: ${err.message}` }], isError: true };
+    }
+  },
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
 /*  INBOX TOOLS — task queue between user and external agents                */
 /* ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -1356,8 +1537,25 @@ server.registerTool(
     task.agent = agent || "unknown";
     task.claimedAt = Date.now();
     writeInbox(tasks);
+
+    /* Include workflow context if this is a workflow step. */
+    let wfContext = "";
+    if (task.workflowId) {
+      const wfs = readWorkflows();
+      const wf = wfs.find((w) => w.id === task.workflowId);
+      if (wf) {
+        wfContext = `\n\n**Workflow:** "${wf.title}" — step ${(task.workflowStep ?? 0) + 1} of ${wf.steps.length}`;
+        if (task.workflowStep > 0) {
+          const prevStep = wf.steps[task.workflowStep - 1];
+          if (prevStep?.result) {
+            wfContext += `\n\n**Previous step output:**\n${prevStep.result}`;
+          }
+        }
+      }
+    }
+
     return {
-      content: [{ type: "text", text: `Claimed. Here's what to do:\n\n${task.instruction}\n\nWhen done, call \`report_result\` with task ID "${task.id}".` }],
+      content: [{ type: "text", text: `Claimed. Here's what to do:\n\n${task.instruction}${wfContext}\n\nWhen done, call \`report_result\` with task ID "${task.id}".` }],
     };
   },
 );
@@ -1410,8 +1608,96 @@ server.registerTool(
       boundary: "none",
     });
 
+    /* Advance workflow if this task is part of one. */
+    let workflowMsg = "";
+    if (task.workflowId) {
+      const wf = advanceWorkflow(task.workflowId, result, success ?? true);
+      if (wf) {
+        if (wf.status === "done") {
+          workflowMsg = `\n\nWorkflow "${wf.title}" is now complete (all ${wf.steps.length} steps done).`;
+        } else if (wf.status === "failed") {
+          workflowMsg = `\n\nWorkflow "${wf.title}" failed at step ${wf.currentStep + 1}.`;
+        } else if (wf.status === "running") {
+          workflowMsg = `\n\nWorkflow "${wf.title}" advanced to step ${wf.currentStep + 1} of ${wf.steps.length}.`;
+        }
+      }
+    }
+
     return {
-      content: [{ type: "text", text: `Reported. The user will see your result in Doppel.` }],
+      content: [{ type: "text", text: `Reported. The user will see your result in Doppel.${workflowMsg}` }],
+    };
+  },
+);
+
+/* --- Tool: orchestrate --------------------------------------------------- */
+
+server.registerTool(
+  "orchestrate",
+  {
+    description:
+      "Create a multi-step workflow that chains tasks across agents. Each step becomes an inbox task; when one step completes, the next auto-queues with the previous output as context. Use this when a task needs multiple agents in sequence (e.g. 'Cursor writes code, Claude Desktop reviews it').",
+    inputSchema: z.object({
+      title: z.string().describe("A short title for the workflow"),
+      steps: z.array(z.object({
+        instruction: z.string().describe("What this step should do"),
+        target: z.string().default("any").describe("Which agent should handle this step (e.g. 'Cursor', 'Claude Desktop', or 'any')"),
+      })).min(2).describe("Ordered list of steps (at least 2)"),
+      onFailure: z.enum(["abort", "skip", "retry"]).default("abort").describe("What to do if a step fails: abort the workflow, skip to next, or wait for retry"),
+    }),
+  },
+  async ({ title, steps, onFailure }) => {
+    const wfId = `wf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const wfSteps = steps.map((s, i) => ({
+      id: `${wfId}-s${i}`,
+      index: i,
+      instruction: s.instruction,
+      target: s.target || "any",
+      status: i === 0 ? "queued" : "pending",
+      inputContext: null,
+      result: null,
+      agent: null,
+      claimedAt: null,
+      completedAt: null,
+    }));
+
+    const workflow = {
+      id: wfId,
+      createdAt: Date.now(),
+      status: "running",
+      title,
+      source: "agent",
+      sourceAgent: null,
+      steps: wfSteps,
+      currentStep: 0,
+      completedAt: null,
+      onFailure: onFailure || "abort",
+    };
+
+    const wfs = readWorkflows();
+    wfs.unshift(workflow);
+    writeWorkflows(wfs);
+
+    /* Queue first step. */
+    const tasks = readInbox();
+    tasks.unshift({
+      id: wfSteps[0].id,
+      createdAt: Date.now(),
+      status: "approved",
+      instruction: wfSteps[0].instruction,
+      source: "system",
+      target: wfSteps[0].target,
+      agent: null,
+      claimedAt: null,
+      result: null,
+      completedAt: null,
+      workflowId: wfId,
+      workflowStep: 0,
+    });
+    writeInbox(tasks);
+
+    const stepList = wfSteps.map((s, i) => `${i + 1}. ${s.instruction} → ${s.target}`).join("\n");
+    return {
+      content: [{ type: "text", text: `Workflow "${title}" created with ${wfSteps.length} steps. Step 1 is now queued.\n\n${stepList}` }],
     };
   },
 );

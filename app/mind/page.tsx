@@ -6,7 +6,7 @@ import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { ago } from "@/lib/time";
 import { appLabel } from "@/lib/events";
-import type { BrainEntity, BrainStats, ContextPack, MorningBrief } from "@/lib/types";
+import type { BrainStats, ContextPack, UserProfile } from "@/lib/types";
 import { Pulse } from "@/components/Pulse";
 import { Mascot } from "@/components/Mascot";
 import { ApiKeyPanel } from "@/components/ApiKeyPanel";
@@ -24,12 +24,10 @@ export default function MindPage() {
   const screenAllowed = useDoppel((s) => s.permissions.screen);
 
   const [brain, setBrain] = useState<BrainStats | null>(null);
-  const [entities, setEntities] = useState<BrainEntity[]>([]);
   const [looking, setLooking] = useState(false);
   const [lookError, setLookError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     setBrain(await doppel.brainStats());
-    setEntities(await doppel.brainEntities());
   }, []);
 
   useEffect(() => {
@@ -64,10 +62,8 @@ export default function MindPage() {
         </section>
       )}
 
-      {/* -------------------------------------------------------- morning brief */}
-      <section className="mb-14">
-        <MorningBriefSection />
-      </section>
+      {/* ----------------------------------------------------------- profile */}
+      <ProfileSection />
 
       {/* ------------------------------------------------------------ seeing */}
       <section className="mb-14">
@@ -163,9 +159,6 @@ export default function MindPage() {
       {/* --------------------------------------------------------------- brain */}
       <section>
         <SectionHeading>{voice.mind.brainTitle}</SectionHeading>
-        <p className="mb-5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-          {voice.mind.brainBody}
-        </p>
 
         <div className="pressed" style={{ padding: 26 }}>
           <p className="agent-voice">
@@ -174,95 +167,120 @@ export default function MindPage() {
               : voice.mind.brainEmpty}
           </p>
           <p className="micro-label mt-3">
-            {stats.looks ?? 0} looks &middot; {(stats.visionTokens ?? 0).toLocaleString()} tokens spent
-            seeing
+            {brain?.vectors?.count ?? 0} vectors &middot; {stats.looks ?? 0} looks
           </p>
-
-          {/* How the memories are actually kept. */}
-          <p
-            className="agent-voice mt-5"
-            style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-          >
-            {brain?.vectors?.available === false && brain.vectors.count === 0
-              ? voice.mind.storageOffline
-              : voice.mind.storageBody}
-          </p>
-          <p className="micro-label mt-3">
-            {voice.mind.storageStats(brain?.vectors?.count ?? 0, brain?.vectors?.bytes ?? 0)}
-          </p>
-
         </div>
 
-        {entities.length > 0 && (
-          <div className="mt-6 flex flex-col gap-3">
-            {entities.slice(0, 30).map((entity) => (
-              <div
-                key={entity.id}
-                className="raised flex flex-wrap items-start justify-between gap-5"
-                style={{ padding: "18px 22px" }}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-baseline gap-3">
-                    <span style={{ fontWeight: 600 }}>{entity.name}</span>
-                    <span className="micro-label">{entity.kind}</span>
-                  </div>
-                  {entity.note && (
-                    <p
-                      className="agent-voice mt-1.5"
-                      style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-                    >
-                      {entity.note}
-                    </p>
-                  )}
-                  <p className="micro-label mt-2">
-                    seen {entity.seenCount} times &middot; last {ago(entity.lastSeen, now)}
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    await doppel.brainForget(entity.id);
-                    refresh();
-                  }}
-                >
-                  {voice.mind.forget}
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <ImportDocuments onDone={refresh} />
-
-        <div className="mt-6 flex flex-wrap items-center gap-4">
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              const result = await doppel.exportBrain();
-              if (result?.ok && result.file) {
-                useDoppel.getState().setFlash(
-                  `Exported ${result.stats?.totalEpisodes ?? 0} episodes to ${result.file}`,
-                );
-              }
-            }}
-          >
-            Export brain
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={async () => {
+            const result = await doppel.ingestDocument();
+            if (result?.ok) refresh();
+          }}>
+            Import documents
           </Button>
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              if (!window.confirm(voice.mind.wipeConfirm)) return;
-              await doppel.wipeBrain();
-              refresh();
-            }}
-          >
+          <Button variant="ghost" size="sm" onClick={async () => {
+            if (!window.confirm(voice.mind.wipeConfirm)) return;
+            await doppel.wipeBrain();
+            refresh();
+          }}>
             {voice.mind.wipe}
           </Button>
         </div>
       </section>
 
     </div>
+  );
+}
+
+/* =========================================================================
+   Profile — who Doppel thinks you are
+   ========================================================================= */
+
+function ProfileSection() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const configured = useDoppel((s) => s.ai.configured);
+
+  useEffect(() => {
+    doppel.userProfile().then((p) => { if (p) setProfile(p); });
+  }, []);
+
+  const generate = async () => {
+    setGenerating(true);
+    setError(null);
+    const result = await doppel.generateProfile();
+    setGenerating(false);
+    if (result.ok && result.profile) setProfile(result.profile);
+    else setError(("detail" in result ? result.detail : null) ?? result.reason ?? "Not enough data yet.");
+  };
+
+  return (
+    <section className="mb-14">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+        <SectionHeading>Your profile</SectionHeading>
+        <Button size="sm" onClick={generate} disabled={generating || !configured}>
+          {generating ? "Building\u2026" : profile ? "Refresh" : "Generate"}
+        </Button>
+      </div>
+
+      {error && (
+        <p className="agent-voice mb-4" style={{
+          background: "var(--primary-soft)", borderRadius: "var(--radius-card-sm)",
+          padding: "14px 18px", fontSize: "var(--text-sm)",
+        }}>
+          {error}
+        </p>
+      )}
+
+      {profile ? (
+        <div className="raised" style={{ padding: "24px 28px" }}>
+          <p className="agent-voice" style={{ marginBottom: 16, lineHeight: 1.6 }}>
+            {profile.portrait}
+          </p>
+
+          {profile.expertise?.length > 0 && (
+            <div className="mb-4">
+              <p className="micro-label mb-2">Expertise</p>
+              <div className="flex flex-wrap gap-2">
+                {profile.expertise.map((e, i) => (
+                  <span key={i} style={{
+                    fontSize: "var(--text-xs, 11px)",
+                    background: e.depth === "deep" ? "var(--primary-soft)" : "var(--surface-alt)",
+                    borderRadius: 4, padding: "3px 10px",
+                    color: e.depth === "deep" ? "var(--primary)" : "var(--ink)",
+                    fontWeight: e.depth === "deep" ? 600 : 400,
+                  }}>
+                    {e.domain}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {profile.priorities?.length > 0 && (
+            <div>
+              <p className="micro-label mb-2">Priorities</p>
+              <ul className="flex flex-col gap-1" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+                {profile.priorities.map((p, i) => <li key={i}>· {p.label}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {profile.updatedAt && (
+            <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 12, opacity: 0.5 }}>
+              {profile.observationsProcessed || 0} observations
+            </p>
+          )}
+        </div>
+      ) : !generating && (
+        <p className="agent-voice" style={{ color: "var(--slate)" }}>
+          {configured
+            ? "Doppel hasn't built your profile yet. It needs at least 50 observations, or you can generate one now."
+            : "Set up your API key first, then Doppel can build a profile of who you are."}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -413,165 +431,6 @@ function RecallBox() {
         </div>
       )}
     </>
-  );
-}
-
-/* --------------------------------------------------------------------------- */
-
-function MorningBriefSection() {
-  const [brief, setBrief] = useState<MorningBrief | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const configured = useDoppel((s) => s.ai.configured);
-
-  useEffect(() => {
-    doppel.morningBriefCached().then((r) => {
-      if (r.ok && r.brief) setBrief(r.brief);
-    });
-  }, []);
-
-  const generate = async () => {
-    setLoading(true);
-    setError(null);
-    const result = await doppel.morningBrief();
-    setLoading(false);
-    if (result.ok && result.brief) setBrief(result.brief);
-    else setError(("detail" in result ? result.detail : null) ?? result.reason ?? "Couldn't generate a brief.");
-  };
-
-  return (
-    <>
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-        <SectionHeading>{voice.brief.title}</SectionHeading>
-        <Button size="sm" onClick={generate} disabled={loading || !configured}>
-          {loading ? voice.brief.generating : brief ? voice.brief.refresh : voice.brief.title}
-        </Button>
-      </div>
-
-      {error && (
-        <p className="agent-voice mb-4" style={{
-          background: "var(--primary-soft)", borderRadius: "var(--radius-card-sm)",
-          padding: "14px 18px", fontSize: "var(--text-sm)",
-        }}>
-          {error}
-        </p>
-      )}
-
-      {brief ? (
-        <div className="raised" style={{ padding: "24px 28px" }}>
-          <p className="agent-voice" style={{ fontWeight: 600, marginBottom: 12 }}>
-            {brief.greeting}
-          </p>
-          <p className="agent-voice" style={{ marginBottom: 16, color: "var(--slate)" }}>
-            {brief.yesterday}
-          </p>
-
-          {brief.patterns.length > 0 && (
-            <div className="mb-4">
-              <p className="micro-label mb-2">{voice.brief.patterns}</p>
-              <ul className="flex flex-col gap-1.5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-                {brief.patterns.map((p, i) => <li key={i}>· {p}</li>)}
-              </ul>
-            </div>
-          )}
-
-          {brief.connections.length > 0 && (
-            <div className="mb-4">
-              <p className="micro-label mb-2">{voice.brief.connections}</p>
-              <ul className="flex flex-col gap-1.5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-                {brief.connections.map((c, i) => <li key={i}>· {c}</li>)}
-              </ul>
-            </div>
-          )}
-
-          {brief.openThreads.length > 0 && (
-            <div className="mb-4">
-              <p className="micro-label mb-2">{voice.brief.openThreads}</p>
-              <ul className="flex flex-col gap-1.5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-                {brief.openThreads.map((t, i) => <li key={i}>· {t}</li>)}
-              </ul>
-            </div>
-          )}
-
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 12 }}>
-            <p className="micro-label mb-1">{voice.brief.suggestion}</p>
-            <p className="agent-voice" style={{ fontSize: "var(--text-sm)" }}>{brief.suggestion}</p>
-          </div>
-        </div>
-      ) : !loading && (
-        <p className="agent-voice" style={{ color: "var(--slate)" }}>
-          {configured ? voice.brief.notReady : voice.brief.noKey}
-        </p>
-      )}
-    </>
-  );
-}
-
-/* --------------------------------------------------------------------------- */
-
-function ImportDocuments({ onDone }: { onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ total: number; files: string[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const importFiles = async () => {
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    const res = await doppel.ingestDocument();
-    setBusy(false);
-    if (!res) return; // user cancelled picker
-    if (res.ok) {
-      setResult({ total: res.episodes ?? 0, files: res.files ?? [] });
-      onDone();
-    } else {
-      setError(res.detail ?? "Import failed.");
-    }
-  };
-
-  return (
-    <div className="mt-6">
-      <div className="flex flex-wrap items-center gap-4">
-        <Button variant="ghost" onClick={importFiles} disabled={busy}>
-          {busy ? "Importing\u2026" : "Import documents"}
-        </Button>
-        {busy && <Pulse size={24} className="-m-1" />}
-      </div>
-
-      {result && (
-        <div
-          className="agent-voice mt-3"
-          style={{
-            background: "var(--primary-soft)",
-            borderRadius: "var(--radius-card-sm)",
-            padding: "14px 18px",
-            fontSize: "var(--text-sm)",
-          }}
-        >
-          Imported {result.files.length} document{result.files.length !== 1 ? "s" : ""} into{" "}
-          {result.total} memory episode{result.total !== 1 ? "s" : ""}.
-          {result.files.length > 0 && (
-            <span style={{ color: "var(--slate)", marginLeft: 8 }}>
-              {result.files.join(", ")}
-            </span>
-          )}
-        </div>
-      )}
-
-      {error && (
-        <p
-          className="agent-voice mt-3"
-          style={{
-            background: "var(--primary-soft)",
-            borderRadius: "var(--radius-card-sm)",
-            padding: "14px 18px",
-            fontSize: "var(--text-sm)",
-          }}
-        >
-          {error}
-        </p>
-      )}
-    </div>
   );
 }
 

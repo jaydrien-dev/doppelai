@@ -19,6 +19,7 @@ const browser = require("./browser");
 const ingest = require("./ingest");
 const tokens = require("./tokens");
 const guide = require("./guide");
+const profile = require("./profile");
 
 /**
  * Everything the interface can ask for. The renderer holds no truth of its
@@ -61,6 +62,17 @@ function startConsolidation() {
     } catch (err) {
       console.error("[doppel] could not consolidate:", err.message);
     }
+
+    /* Refine user profile when enough new observations accumulate. */
+    try {
+      const s = brain.stats();
+      if (profile.shouldRefine(s.episodes)) {
+        await profile.generateProfile();
+        console.log("[doppel] user profile updated");
+      }
+    } catch (err) {
+      console.error("[doppel] profile refinement failed:", err.message);
+    }
   }, 20 * 60_000);
 
   setInterval(async () => {
@@ -95,6 +107,7 @@ function startConsolidation() {
 
 function register(opts = {}) {
   brain.init();
+  profile.init();
   /* Preload the embedding model during boot so the first question doesn't
      eat a 20-second cold start.  Fire-and-forget — if it fails the brain
      already falls back to lexical search. */
@@ -1213,19 +1226,53 @@ function register(opts = {}) {
       const data = brain.exportBrain();
       const result = await dialog.showSaveDialog({
         title: "Export Doppel's brain",
-        defaultPath: `doppel-brain-${new Date().toISOString().slice(0, 10)}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultPath: `doppel-brain-${new Date().toISOString().slice(0, 10)}.doppel`,
+        filters: [{ name: "Doppel Brain", extensions: ["doppel"] }],
       });
       if (result.canceled || !result.filePath) return { ok: false, reason: "canceled" };
       const fs = require("node:fs");
-      fs.writeFileSync(result.filePath, JSON.stringify(data, null, 2), "utf8");
+      const zlib = require("node:zlib");
+      const compressed = zlib.gzipSync(JSON.stringify(data));
+      fs.writeFileSync(result.filePath, compressed);
       return { ok: true, file: result.filePath, stats: data.stats };
     } catch (err) {
       return { ok: false, reason: "error", detail: err.message };
     }
   });
 
+  ipcMain.handle("brain:import", async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: "Import Doppel brain",
+        filters: [{ name: "Doppel Brain", extensions: ["doppel"] }],
+        properties: ["openFile"],
+      });
+      if (result.canceled || !result.filePaths?.length) return { ok: false, reason: "canceled" };
+      const fs = require("node:fs");
+      const zlib = require("node:zlib");
+      const compressed = fs.readFileSync(result.filePaths[0]);
+      const data = JSON.parse(zlib.gunzipSync(compressed).toString("utf8"));
+      const importResult = brain.importBrain(data);
+      pushState();
+      return importResult;
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
+
   handle("brain:wipe", () => brain.wipe());
+
+  /* --- user profile ----------------------------------------------------- */
+
+  ipcMain.handle("profile:get", () => profile.getProfile());
+
+  ipcMain.handle("profile:generate", async () => {
+    try {
+      return await profile.generateProfile();
+    } catch (err) {
+      return { ok: false, reason: "error", detail: err.message };
+    }
+  });
 
   /* --- document ingestion ----------------------------------------------- */
 
@@ -1281,7 +1328,26 @@ function register(opts = {}) {
     db.update((s) => { s.nudges.enabled = !!on; });
   });
 
-  handle("nudge:act", (id) => nudge.act(id));
+  handle("nudge:act", (id) => {
+    const result = nudge.act(id);
+    if (result.ok && result.nudge?.kind === "offer") {
+      const tasks = readInbox();
+      tasks.unshift({
+        id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        createdAt: Date.now(),
+        status: "approved",
+        instruction: result.nudge.detail || result.nudge.text,
+        source: "nudge",
+        target: "any",
+        agent: null,
+        claimedAt: null,
+        result: null,
+        completedAt: null,
+      });
+      writeInbox(tasks);
+    }
+    return result;
+  });
 
   /* --- inbox — task queue for external agents ---------------------------- */
 
@@ -1362,6 +1428,171 @@ function register(opts = {}) {
     return { ok: true };
   });
 
+  /* --- workflows — cross-agent orchestration ----------------------------- */
+
+  const WORKFLOW_FILE = path.join(db.paths.dir, "workflows.json");
+
+  function readWorkflows() {
+    try {
+      const raw = JSON.parse(fs.readFileSync(WORKFLOW_FILE, "utf8"));
+      return Array.isArray(raw) ? raw : [];
+    } catch { return []; }
+  }
+  function writeWorkflows(wfs) {
+    fs.writeFileSync(WORKFLOW_FILE, JSON.stringify(wfs, null, 2));
+  }
+
+  function createWorkflow(title, steps, onFailure = "abort", source = "user", sourceAgent = null) {
+    const wfId = `wf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const wfSteps = steps.map((s, i) => ({
+      id: `${wfId}-s${i}`,
+      index: i,
+      instruction: s.instruction,
+      target: s.target || "any",
+      status: i === 0 ? "queued" : "pending",
+      inputContext: null,
+      result: null,
+      agent: null,
+      claimedAt: null,
+      completedAt: null,
+    }));
+
+    const workflow = {
+      id: wfId,
+      createdAt: Date.now(),
+      status: "running",
+      title,
+      source,
+      sourceAgent,
+      steps: wfSteps,
+      currentStep: 0,
+      completedAt: null,
+      onFailure,
+    };
+
+    const wfs = readWorkflows();
+    wfs.unshift(workflow);
+    writeWorkflows(wfs);
+
+    /* Queue first step as an inbox task. */
+    const tasks = readInbox();
+    tasks.unshift({
+      id: wfSteps[0].id,
+      createdAt: Date.now(),
+      status: "approved",
+      instruction: wfSteps[0].instruction,
+      source: source === "agent" ? "system" : "user",
+      target: wfSteps[0].target,
+      agent: null,
+      claimedAt: null,
+      result: null,
+      completedAt: null,
+      workflowId: wfId,
+      workflowStep: 0,
+    });
+    writeInbox(tasks);
+    pushState();
+
+    return workflow;
+  }
+
+  function advanceWorkflow(workflowId, stepResult, success) {
+    const wfs = readWorkflows();
+    const wf = wfs.find((w) => w.id === workflowId);
+    if (!wf || wf.status !== "running") return null;
+
+    const current = wf.steps[wf.currentStep];
+    if (current) {
+      current.status = success ? "done" : "failed";
+      current.result = stepResult;
+      current.completedAt = Date.now();
+    }
+
+    if (!success) {
+      if (wf.onFailure === "abort") {
+        wf.status = "failed";
+        wf.completedAt = Date.now();
+        writeWorkflows(wfs);
+        pushState();
+        return wf;
+      }
+      if (wf.onFailure === "skip") {
+        current.status = "skipped";
+      }
+      /* "retry" — the step stays failed, user can retry from UI */
+      if (wf.onFailure === "retry") {
+        writeWorkflows(wfs);
+        pushState();
+        return wf;
+      }
+    }
+
+    /* Move to next step. */
+    const nextIdx = wf.currentStep + 1;
+    if (nextIdx >= wf.steps.length) {
+      wf.status = "done";
+      wf.completedAt = Date.now();
+      writeWorkflows(wfs);
+      pushState();
+      return wf;
+    }
+
+    wf.currentStep = nextIdx;
+    const next = wf.steps[nextIdx];
+    next.status = "queued";
+    next.inputContext = stepResult;
+    writeWorkflows(wfs);
+
+    /* Queue next step as inbox task with previous output. */
+    const tasks = readInbox();
+    tasks.unshift({
+      id: next.id,
+      createdAt: Date.now(),
+      status: "approved",
+      instruction: next.instruction + (stepResult ? `\n\n--- Context from previous step ---\n${stepResult}` : ""),
+      source: "system",
+      target: next.target,
+      agent: null,
+      claimedAt: null,
+      result: null,
+      completedAt: null,
+      workflowId,
+      workflowStep: nextIdx,
+    });
+    writeInbox(tasks);
+    pushState();
+
+    return wf;
+  }
+
+  ipcMain.handle("workflow:list", () => readWorkflows());
+
+  handle("workflow:create", (title, steps, onFailure) => {
+    return createWorkflow(title, steps, onFailure);
+  });
+
+  handle("workflow:abort", (id) => {
+    const wfs = readWorkflows();
+    const wf = wfs.find((w) => w.id === id);
+    if (!wf || wf.status !== "running") return { ok: false };
+    wf.status = "aborted";
+    wf.completedAt = Date.now();
+    /* Also reject any queued inbox tasks for this workflow. */
+    const tasks = readInbox();
+    for (const t of tasks) {
+      if (t.workflowId === id && (t.status === "approved" || t.status === "pending")) {
+        t.status = "rejected";
+      }
+    }
+    writeInbox(tasks);
+    writeWorkflows(wfs);
+    pushState();
+    return { ok: true };
+  });
+
+  /* Expose workflow engine for MCP server to use. */
+  register._workflows = { readWorkflows, writeWorkflows, createWorkflow, advanceWorkflow };
+
   /* --- guide — Clicky-style walkthroughs -------------------------------- */
 
   ipcMain.handle("guide:findElement", async (_e, description) => {
@@ -1429,6 +1660,8 @@ function register(opts = {}) {
 
   handle("account:requestLink", (email) => account.requestLink(email));
   handle("account:verifyLink", (token) => account.verifyLink(token));
+  handle("account:register", ({ email, password }) => account.register(email, password));
+  handle("account:resetPassword", ({ token, password }) => account.resetPassword(token, password));
   handle("account:password", ({ email, password }) => account.signInWithPassword(email, password));
   handle("account:setPassword", (password) => account.setPassword(password));
   ipcMain.handle("account:overview", () => account.overview());

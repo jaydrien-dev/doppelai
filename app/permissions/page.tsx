@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
-import { ago } from "@/lib/time";
-import { describeEvent } from "@/lib/events";
 import type { Permissions } from "@/lib/types";
 import { Pulse } from "@/components/Pulse";
 import { ApiKeyPanel } from "@/components/ApiKeyPanel";
@@ -31,12 +29,9 @@ export default function PermissionsPage() {
   const permissions = useDoppel((s) => s.permissions);
   const paused = useDoppel((s) => s.observation.paused);
   const roots = useDoppel((s) => s.observation.roots);
-  const events = useDoppel((s) => s.recentEvents);
   const overlay = useDoppel((s) => s.overlay);
   const whisper = useDoppel((s) => s.whisper);
   const nudgeSettings = useDoppel((s) => s.nudgeSettings);
-  const now = useDoppel((s) => s.now);
-
   return (
     <div className="max-w-[720px]">
       <header className="mb-12">
@@ -73,9 +68,6 @@ export default function PermissionsPage() {
       <section className="mb-14">
         <ApiKeyPanel />
       </section>
-
-      {/* -------------------------------------------------------------- usage */}
-      <UsagePanel />
 
       {/* ----------------------------------------------------------- overlay */}
       <section className="mb-14">
@@ -299,30 +291,6 @@ export default function PermissionsPage() {
         </p>
       </section>
 
-      {/* ---------------------------------------------------------- live feed */}
-      <section className="mb-14">
-        <SectionHeading>{voice.permissions.feedTitle}</SectionHeading>
-        <p className="mb-5" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-          {voice.permissions.feedNote}
-        </p>
-        <div className="pressed" style={{ padding: 24 }}>
-          {events.length === 0 ? (
-            <p style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-              {voice.permissions.feedEmpty}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-2.5">
-              {events.slice(0, 12).map((e) => (
-                <li key={e.id} className="flex flex-wrap items-baseline justify-between gap-3">
-                  <span style={{ fontSize: "var(--text-sm)" }}>{describeEvent(e)}</span>
-                  <span className="micro-label">{ago(e.at, now)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
     </div>
   );
 }
@@ -482,53 +450,6 @@ function BiometricPanel() {
         )}
       </div>
     </section>
-  );
-}
-
-function UsagePanel() {
-  const usage = useDoppel((s) => s.usage);
-  const c = usage?.current;
-  if (!c || !c.calls) return null;
-
-  /* Rough cost estimate based on Anthropic's published pricing.
-     Sonnet: $3/$15, Haiku: $0.80/$4, cache read: 90% off input.
-     We can't tell which model each call used, so we estimate a blend. */
-  const inputCost = (c.inputTokens - (c.cacheRead ?? 0)) * (3 / 1_000_000)
-    + (c.cacheRead ?? 0) * (0.30 / 1_000_000);
-  const outputCost = c.outputTokens * (15 / 1_000_000);
-  const est = inputCost + outputCost;
-
-  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-
-  return (
-    <section className="mb-14">
-      <div className="pressed" style={{ padding: 28 }}>
-        <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
-          Usage this month
-        </p>
-        <div className="mt-5 flex flex-wrap gap-x-10 gap-y-4">
-          <Stat label="API calls" value={String(c.calls)} />
-          <Stat label="Input tokens" value={fmt(c.inputTokens)} />
-          <Stat label="Output tokens" value={fmt(c.outputTokens)} />
-          {c.cacheRead > 0 && <Stat label="Cache hits" value={fmt(c.cacheRead)} />}
-          <Stat label="Est. cost" value={`$${est < 0.01 ? est.toFixed(4) : est.toFixed(2)}`} />
-        </div>
-        {c.month && (
-          <p className="mt-4" style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)" }}>
-            {c.month} · resets each calendar month
-          </p>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p style={{ fontSize: "var(--text-title)", fontWeight: 600, color: "var(--ink)" }}>{value}</p>
-      <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 2 }}>{label}</p>
-    </div>
   );
 }
 

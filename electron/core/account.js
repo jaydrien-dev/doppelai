@@ -102,7 +102,7 @@ async function verifyLink(token) {
     body: { token, ...deviceIdentity() },
     auth: false,
   });
-  if (result.ok) adopt(result);
+  if (result.ok) { adopt(result); startHeartbeat(); }
   return result;
 }
 
@@ -112,7 +112,27 @@ async function signInWithPassword(email, password) {
     body: { email, password, ...deviceIdentity() },
     auth: false,
   });
-  if (result.ok) adopt(result);
+  if (result.ok) { adopt(result); startHeartbeat(); }
+  return result;
+}
+
+async function register(email, password) {
+  const result = await call("/v1/auth/register", {
+    method: "POST",
+    body: { email, password, ...deviceIdentity() },
+    auth: false,
+  });
+  if (result.ok) { adopt(result); startHeartbeat(); }
+  return result;
+}
+
+async function resetPassword(token, password) {
+  const result = await call("/v1/auth/password/reset", {
+    method: "POST",
+    body: { token, password, ...deviceIdentity() },
+    auth: false,
+  });
+  if (result.ok) { adopt(result); startHeartbeat(); }
   return result;
 }
 
@@ -161,6 +181,7 @@ async function deleteAccount() {
  * holds or doesn't.
  */
 function signOutLocally(reason) {
+  stopHeartbeat();
   db.update((s) => {
     s.account.token = "";
     s.account.accountId = null;
@@ -171,6 +192,9 @@ function signOutLocally(reason) {
 }
 
 async function signOut() {
+  stopHeartbeat();
+  // Tell the server so "last seen" stops and the device shows as inactive.
+  await call("/v1/auth/signout", { method: "POST" }).catch(() => {});
   signOutLocally(null);
   return { ok: true };
 }
@@ -217,6 +241,8 @@ module.exports = {
   requestLink,
   verifyLink,
   signInWithPassword,
+  register,
+  resetPassword,
   setPassword,
   overview,
   revokeDevice,
