@@ -39,9 +39,9 @@ export const voice = {
       "remember what you were doing, and eventually do tasks for you. Let's get me set up.",
     stepKey: "Connect to AI",
     stepKeyBody:
-      "I use an AI called Claude to understand what's on your screen. " +
-      "You'll need a key from Anthropic — it takes about 30 seconds to get one.",
-    stepKeyLink: "Get a key from console.anthropic.com",
+      "I use Gemini to understand what's on your screen. " +
+      "You'll need a key from Google AI Studio — it takes about 30 seconds to get one.",
+    stepKeyLink: "Get a key from aistudio.google.com",
     stepScreen: "Let me see your screen",
     stepScreenBody:
       "This is what makes me useful. Without it, I can only see file names and window titles. " +
@@ -108,7 +108,7 @@ export const voice = {
       "windows or clipboard ever leaves.",
     localScreen:
       "The exception is reading the screen. To understand what I'm looking at I send the " +
-      "screenshot to Anthropic to be described, and keep only the description. That happens " +
+      "screenshot to Google's Gemini API to be described, and keep only the description. That happens " +
       "solely while you have it switched on, and never for a screen I judge to be private. " +
       "Everything else here is local.",
     localScreenOff:
@@ -286,9 +286,9 @@ export const voice = {
 
     keyTitle: "Where my intelligence comes from",
     keyBody:
-      "I use Claude Opus 5 to understand what I'm looking at. That needs a key from " +
-      "platform.claude.com. It's kept on this machine and used for nothing else.",
-    keyPlaceholder: "sk-ant-…",
+      "I use Gemini 3.6 Flash to understand what I'm looking at. That needs a key from " +
+      "aistudio.google.com. It's kept on this machine and used for nothing else.",
+    keyPlaceholder: "AIza…",
     keySave: "Use this key",
     keyChecking: "Checking it works",
     keyGood: (hint: string) => `Working. Using the key ending ${hint}.`,

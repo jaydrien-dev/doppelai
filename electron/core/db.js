@@ -229,8 +229,9 @@ function migrateSecrets(s) {
   const v = getVault();
   if (!s.ai) return;
 
-  /* Anthropic key — starts with "sk-ant-" when plaintext. */
-  if (s.ai.apiKey && s.ai.apiKey.startsWith("sk-")) {
+  /* API key — encrypt if it looks like plaintext (Gemini keys start with "AI",
+     old Anthropic keys start with "sk-"). */
+  if (s.ai.apiKey && (s.ai.apiKey.startsWith("AI") || s.ai.apiKey.startsWith("sk-"))) {
     s.ai.apiKey = v.encryptSecret(s.ai.apiKey);
     schedule(); // persist the encrypted version
   }
@@ -243,7 +244,7 @@ function migrateSecrets(s) {
 }
 
 /**
- * Decrypt the Anthropic API key. Never read `state.ai.apiKey` directly
+ * Decrypt the API key (Gemini). Never read `state.ai.apiKey` directly
  * from outside db.js — use this instead.
  */
 function apiKey() {
@@ -330,8 +331,8 @@ function publicState() {
     /* The key itself never crosses to the renderer — only enough to show
        which one is in use. */
     ai: {
-      configured: Boolean(key || process.env.ANTHROPIC_API_KEY),
-      fromEnvironment: !key && Boolean(process.env.ANTHROPIC_API_KEY),
+      configured: Boolean(key || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+      fromEnvironment: !key && Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
       verified: Boolean(s.ai?.verified),
       lastError: s.ai?.lastError ?? null,
       autoWatch: s.ai?.autoWatch !== false,

@@ -399,7 +399,7 @@ function StepApiKey({ onNext, onSkip }: { onNext: () => void; onSkip: () => void
         {voice.onboarding.stepKeyBody}
       </p>
       <a
-        href="https://console.anthropic.com/settings/keys"
+        href="https://aistudio.google.com/apikey"
         target="_blank"
         rel="noopener noreferrer"
         className="mt-3 inline-block"

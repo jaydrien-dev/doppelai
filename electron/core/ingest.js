@@ -196,17 +196,12 @@ async function parsePdf(filePath) {
 }
 
 /**
- * Send PDF pages as images to Claude vision.
- * Uses sharp to convert raw page renders, but falls back to sending the
- * first page as an image if full rendering isn't available.
+ * Send PDF to Gemini vision for description.
+ * Gemini supports PDF via inlineData with application/pdf mimeType.
  */
 async function describePdfVision(buffer, pageCount) {
-  /* Try sending the PDF buffer directly as a document. The Anthropic API
-     supports PDF content blocks (media_type "application/pdf"). */
   const base64 = buffer.toString("base64");
 
-  /* For very large PDFs, only describe the first 30 pages to stay under
-     API limits. The user is told how many pages were processed. */
   const pageCap = Math.min(pageCount, 30);
   const pageNote =
     pageCount > pageCap
@@ -223,7 +218,7 @@ async function describePdfVision(buffer, pageCount) {
         role: "user",
         content: [
           {
-            type: "document",
+            type: "image",
             source: { type: "base64", media_type: "application/pdf", data: base64 },
           },
           {

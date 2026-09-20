@@ -404,6 +404,42 @@ const crypto = require("node:crypto");
 
 const oauthClients = new Map();  // clientId → { secret, redirectUris, name }
 const oauthCodes = new Map();    // code → { clientId, accountId, expiresAt, codeChallenge, codeChallengeMethod }
+
+/** Render a sign-in page for OAuth authorization (when no session exists). */
+function oauthLoginPage(clientId, redirectUri, state, codeChallenge, codeChallengeMethod, error) {
+  const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in to Doppel</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0e1117;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1a1f2e;border-radius:16px;padding:40px;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+h1{font-size:22px;font-weight:600;margin-bottom:6px}
+.sub{color:#94a3b8;font-size:14px;margin-bottom:28px}
+label{display:block;font-size:13px;color:#94a3b8;margin-bottom:6px;margin-top:18px}
+input{width:100%;padding:12px 14px;border-radius:8px;border:1px solid #2d3548;background:#0e1117;color:#e2e8f0;font-size:15px;outline:none}
+input:focus{border-color:#6366f1}
+button{width:100%;padding:13px;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:15px;font-weight:600;cursor:pointer;margin-top:24px}
+button:hover{background:#4f46e5}
+.err{background:#ef444420;border:1px solid #ef4444;border-radius:8px;padding:10px 14px;color:#fca5a5;font-size:13px;margin-top:16px}
+.logo{font-size:28px;font-weight:700;margin-bottom:4px}
+</style></head><body>
+<div class="card">
+<div class="logo">doppel</div>
+<h1>Sign in to connect</h1>
+<p class="sub">An AI agent is requesting access to your memory.</p>
+<form method="POST" action="/oauth/authorize">
+<input type="hidden" name="client_id" value="${esc(clientId)}">
+<input type="hidden" name="redirect_uri" value="${esc(redirectUri)}">
+<input type="hidden" name="state" value="${esc(state)}">
+<input type="hidden" name="code_challenge" value="${esc(codeChallenge)}">
+<input type="hidden" name="code_challenge_method" value="${esc(codeChallengeMethod)}">
+<label>Email</label><input type="email" name="email" required autofocus>
+<label>Password</label><input type="password" name="password" required>
+<button type="submit">Sign in &amp; authorize</button>
+${error ? `<div class="err">${esc(error)}</div>` : ""}
+</form></div></body></html>`;
+}
 /* OAuth tokens are persisted in the store (store.oauthTokens) so they survive deploys. */
 
 /* Dynamic Client Registration (RFC 7591) */
@@ -622,25 +658,65 @@ const server = http.createServer(async (req, res) => {
          valid session token. Without this, anyone who knows the server URL
          could get an OAuth code for any account. */
       const found = store.authenticate(bearer(req) || url.searchParams.get("session_token"));
-      if (!found) {
-        return json(res, 401, { error: "not_signed_in", detail: "A valid Doppel session is required to authorize MCP access." });
+      if (found) {
+        /* Session is valid — auto-approve and redirect with an OAuth code. */
+        const code = crypto.randomBytes(32).toString("base64url");
+        oauthCodes.set(code, {
+          clientId,
+          accountId: found.account.id,
+          expiresAt: Date.now() + 5 * 60_000,
+          codeChallenge: codeChallenge || null,
+          codeChallengeMethod,
+        });
+        const redir = new URL(redirectUri);
+        redir.searchParams.set("code", code);
+        if (state) redir.searchParams.set("state", state);
+        res.writeHead(302, { location: redir.toString() });
+        res.end();
+        return;
       }
-      const account = found.account;
 
-      /* Auto-approve: the user already proved identity via their session. */
+      /* No session — show a sign-in page so the user can authenticate.
+         Claude Desktop and other OAuth clients open this in the browser
+         where no Doppel session exists yet. */
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(oauthLoginPage(clientId, redirectUri, state, codeChallenge, codeChallengeMethod));
+      return;
+    }
+
+    /* OAuth login form submission */
+    if (url.pathname === "/oauth/authorize" && req.method === "POST") {
+      const body = await readBody(req);
+      const { email, password, client_id, redirect_uri, state: st, code_challenge, code_challenge_method } = body;
+
+      if (!email || !password || !client_id || !redirect_uri) {
+        return json(res, 400, { error: "missing_fields" });
+      }
+
+      const client = oauthClients.get(client_id);
+      if (!client || !client.redirectUris.includes(redirect_uri)) {
+        return json(res, 400, { error: "invalid_client" });
+      }
+
+      const account = store.accountByEmail(email);
+      if (!account?.password || !store.passwordMatches(password, account.password.salt, account.password.hash)) {
+        /* Re-show the login page with an error message. */
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end(oauthLoginPage(client_id, redirect_uri, st, code_challenge, code_challenge_method || "plain", "Wrong email or password."));
+        return;
+      }
+
       const code = crypto.randomBytes(32).toString("base64url");
       oauthCodes.set(code, {
-        clientId,
+        clientId: client_id,
         accountId: account.id,
         expiresAt: Date.now() + 5 * 60_000,
-        codeChallenge: codeChallenge || null,
-        codeChallengeMethod,
+        codeChallenge: code_challenge || null,
+        codeChallengeMethod: code_challenge_method || "plain",
       });
-
-      const redir = new URL(redirectUri);
+      const redir = new URL(redirect_uri);
       redir.searchParams.set("code", code);
-      if (state) redir.searchParams.set("state", state);
-
+      if (st) redir.searchParams.set("state", st);
       res.writeHead(302, { location: redir.toString() });
       res.end();
       return;

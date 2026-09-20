@@ -1,40 +1,37 @@
-const Anthropic = require("@anthropic-ai/sdk");
+const { GoogleGenAI } = require("@google/genai");
 
 const db = require("./db");
 
 /**
- * Doppel's mind.
+ * Doppel's mind — Gemini 2.5 Flash edition.
  *
- * Every call to Claude goes through here so there is exactly one place that
- * knows the model, the thinking configuration, and how the cache is laid out.
+ * Every AI call goes through here. The callers never touch the SDK directly,
+ * so the model swap is invisible to them. Same `ask()` and `streamAsk()`
+ * signatures, same return shapes.
  *
- * Three things are deliberate:
- *
- *   - Sonnet 4.5 thinks by default. We never send `budget_tokens`, `temperature`,
- *     `top_p` or `top_k` — all four are rejected on this model. Depth is
- *     controlled with `effort`, chosen per job below.
- *   - The system prompt is a frozen prefix with a cache breakpoint on it, so
- *     the expensive part is written once and read back at a tenth of the price
- *     on every subsequent observation.
- *   - A refusal is a normal outcome, not an exception. We check `stop_reason`
- *     before ever touching `content`, and opt into server-side fallbacks so a
- *     declined request is answered rather than dropped.
+ * Gemini 2.5 Flash is ~10x cheaper on input and ~6x cheaper on output than
+ * Claude Sonnet 4.5, with comparable quality for vision + structured output.
  */
 
-const MODEL = "claude-sonnet-4-5";
-const FAST_MODEL = "claude-haiku-4-5";
+const MODEL = "gemini-3.6-flash";
+const FAST_MODEL = "gemini-3.6-flash";
 
-/** Depth per job. Watching is cheap and constant; acting is not. */
+/** Depth per job. Maps to Gemini thinkingBudget. */
 const EFFORT = {
-  glance: "low", // is anything worth noticing on screen
-  observe: "medium", // describe what the user is doing
-  consolidate: "medium", // fold observations into the brain
-  plan: "high", // work out how to do a task
-  act: "xhigh", // drive the machine (coding/agentic — the documented default)
+  glance: "low",
+  observe: "medium",
+  consolidate: "medium",
+  plan: "high",
+  act: "xhigh",
 };
 
-/** Fallbacks are opt-in; a refused request otherwise just stops. */
-const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+/** Map effort levels to Gemini thinking budgets (token count). */
+const THINKING_BUDGET = {
+  low: 256,
+  medium: 1024,
+  high: 4096,
+  xhigh: 8192,
+};
 
 let client = null;
 let clientKey = null;
@@ -42,47 +39,72 @@ let clientKey = null;
 /* --------------------------------------------------------------------------- */
 
 function apiKey() {
-  /* db.apiKey() returns the decrypted key — never read state.ai.apiKey directly. */
   const fromState = db.apiKey();
-  return (fromState || process.env.ANTHROPIC_API_KEY || "").trim();
+  return (fromState || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
 }
 
 const configured = () => Boolean(apiKey());
 
 /** One client per key, rebuilt when the user pastes a new one. */
-function anthropic() {
+function gemini() {
   const key = apiKey();
   if (!key) return null;
   if (!client || clientKey !== key) {
-    client = new Anthropic({ apiKey: key, maxRetries: 2 });
+    client = new GoogleGenAI({ apiKey: key });
     clientKey = key;
   }
   return client;
 }
 
+/* Keep the old export name so callers that reference `claude.anthropic` still
+   get a truthy value when a key is set. */
+const anthropic = gemini;
+
+/* --------------------------------------------------------------------------- */
+
 /**
- * A refusal arrives as a successful response with an empty or partial body.
- * Reading `content[0]` without checking this is the classic way to crash on it.
+ * Convert Anthropic-style messages to Gemini contents.
+ *
+ * Anthropic:  [{ role, content: [{ type: "text", text }, { type: "image", source: { media_type, data } }] }]
+ * Gemini:     [{ role, parts: [{ text }, { inlineData: { mimeType, data } }] }]
  */
-function refused(response) {
-  return response?.stop_reason === "refusal";
-}
+function toGeminiContents(messages) {
+  return messages.map((msg) => {
+    const role = msg.role === "assistant" ? "model" : "user";
+    const rawContent = msg.content;
 
-function textOf(response) {
-  return (response?.content ?? [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("")
-    .trim();
-}
+    /* Simple string content */
+    if (typeof rawContent === "string") {
+      return { role, parts: [{ text: rawContent }] };
+    }
 
-/** The reasoning summary, when we asked for one. Never the raw chain of thought. */
-function thinkingOf(response) {
-  return (response?.content ?? [])
-    .filter((b) => b.type === "thinking" && b.thinking)
-    .map((b) => b.thinking)
-    .join("\n")
-    .trim();
+    /* Array of content blocks */
+    const parts = (Array.isArray(rawContent) ? rawContent : [rawContent]).map((block) => {
+      if (typeof block === "string") return { text: block };
+
+      /* Anthropic text block */
+      if (block.type === "text") return { text: block.text };
+
+      /* Anthropic image block */
+      if (block.type === "image" && block.source) {
+        return {
+          inlineData: {
+            mimeType: block.source.media_type || "image/png",
+            data: block.source.data,
+          },
+        };
+      }
+
+      /* Pass through anything that's already Gemini-shaped */
+      if (block.inlineData) return block;
+      if (block.text) return { text: block.text };
+
+      /* Unknown block — stringify as text */
+      return { text: JSON.stringify(block) };
+    });
+
+    return { role, parts };
+  });
 }
 
 /* --------------------------------------------------------------------------- */
@@ -90,22 +112,21 @@ function thinkingOf(response) {
 /** Roll the usage counters forward. Called after every API response. */
 function trackUsage(usage) {
   if (!usage) return;
-  const month = new Date().toISOString().slice(0, 7); // "2026-09"
+  const month = new Date().toISOString().slice(0, 7);
 
   db.update((s) => {
     if (!s.usage) s.usage = { current: {}, months: {} };
     const u = s.usage;
 
-    /* If the month rolled over, archive the old one and start fresh. */
     if (u.current.month && u.current.month !== month) {
       u.months[u.current.month] = { ...u.current };
       u.current = { month, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, calls: 0 };
     }
     u.current.month = month;
-    u.current.inputTokens = (u.current.inputTokens ?? 0) + (usage.input_tokens ?? 0);
-    u.current.outputTokens = (u.current.outputTokens ?? 0) + (usage.output_tokens ?? 0);
-    u.current.cacheRead = (u.current.cacheRead ?? 0) + (usage.cache_read_input_tokens ?? 0);
-    u.current.cacheCreate = (u.current.cacheCreate ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    u.current.inputTokens = (u.current.inputTokens ?? 0) + (usage.promptTokenCount ?? 0);
+    u.current.outputTokens = (u.current.outputTokens ?? 0) + (usage.candidatesTokenCount ?? 0);
+    u.current.cacheRead = (u.current.cacheRead ?? 0) + (usage.cachedContentTokenCount ?? 0);
+    u.current.cacheCreate = u.current.cacheCreate ?? 0; // Gemini doesn't separate this
     u.current.calls = (u.current.calls ?? 0) + 1;
   }, { silent: true });
 }
@@ -113,11 +134,9 @@ function trackUsage(usage) {
 /* --------------------------------------------------------------------------- */
 
 /**
- * Ask for a structured answer.
+ * Ask for an answer — optionally structured via JSON schema.
  *
- * `schema` is plain JSON Schema — every object needs `additionalProperties:
- * false` and a `required` list, which is what makes the output guaranteed to
- * parse rather than merely likely to.
+ * Same signature as the old Anthropic version. Callers don't change.
  */
 async function ask({
   system,
@@ -131,84 +150,124 @@ async function ask({
   tools,
   fast = false,
 }) {
-  const api = anthropic();
+  const api = gemini();
   if (!api) return { ok: false, reason: "no-key" };
 
-  /* The system prompt is the cached prefix. Anything volatile belongs in
-     `messages`, after the breakpoint, or the cache is invalidated every call. */
-  const systemBlocks = Array.isArray(system) ? system : [{ type: "text", text: system }];
-  systemBlocks[systemBlocks.length - 1].cache_control = { type: "ephemeral" };
+  /* Build system instruction text */
+  const systemText = Array.isArray(system)
+    ? system.map((b) => (typeof b === "string" ? b : b.text || "")).join("\n")
+    : system;
 
-  const request = {
-    model: fast ? FAST_MODEL : MODEL,
-    max_tokens: maxTokens,
-    system: systemBlocks,
-    messages,
+  const config = {
+    maxOutputTokens: maxTokens,
+    systemInstruction: systemText,
   };
 
-  if (thinking && maxTokens > 1024) {
-    request.thinking = { type: "enabled", budget_tokens: 1024 };
+  /* Thinking budget — Gemini 2.5 Flash has built-in thinking */
+  if (thinking) {
+    const budget = THINKING_BUDGET[effort] || THINKING_BUDGET.medium;
+    config.thinkingConfig = { thinkingBudget: budget };
+  } else {
+    config.thinkingConfig = { thinkingBudget: 0 };
   }
 
+  /* Structured JSON output */
   if (schema) {
-    request.output_config = { format: { type: "json_schema", schema } };
+    config.responseMimeType = "application/json";
+    config.responseJsonSchema = schema;
   }
-  if (tools) request.tools = tools;
 
-  const useBeta = betas.length > 0;
-  const params = useBeta
-    ? { ...request, betas: [...new Set([...betas, FALLBACK_BETA])], fallbacks: "default" }
-    : { ...request, betas: [FALLBACK_BETA], fallbacks: "default" };
+  const contents = toGeminiContents(messages);
 
   try {
-    const response = await api.beta.messages.create(params);
+    const response = await api.models.generateContent({
+      model: fast ? FAST_MODEL : MODEL,
+      contents,
+      config,
+    });
+
     return interpret(response, schema);
   } catch (err) {
-    /* Fallbacks and any tool beta are best-effort: if this deployment doesn't
-       recognise one, drop the extras and make the plain call rather than fail. */
-    if (err?.status === 400) {
-      try {
-        const response = await api.messages.create(request);
-        return interpret(response, schema);
-      } catch (inner) {
-        return { ok: false, reason: "error", detail: describe(inner) };
-      }
-    }
     return { ok: false, reason: "error", detail: describe(err) };
   }
 }
 
 function interpret(response, schema) {
-  trackUsage(response?.usage);
+  const usage = response?.usageMetadata ?? {};
+  trackUsage(usage);
 
-  if (refused(response)) {
+  /* Check for blocked / empty responses */
+  if (response?.promptFeedback?.blockReason) {
     return {
       ok: false,
       reason: "refused",
-      detail: response.stop_details?.explanation ?? "",
-      category: response.stop_details?.category ?? null,
+      detail: response.promptFeedback.blockReasonMessage ?? response.promptFeedback.blockReason,
+      category: response.promptFeedback.blockReason,
     };
   }
 
-  const text = textOf(response);
-  const usage = response.usage ?? {};
+  const candidate = response?.candidates?.[0];
+  if (!candidate || candidate.finishReason === "SAFETY") {
+    return {
+      ok: false,
+      reason: "refused",
+      detail: candidate?.finishMessage ?? "Content filtered",
+      category: "safety",
+    };
+  }
+
+  const text = response.text ?? "";
+
+  /* Extract thinking parts if any */
+  const thinkingText = (candidate.content?.parts ?? [])
+    .filter((p) => p.thought && p.text)
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+
+  /* Map Gemini usage to the shape callers expect */
+  const usageOut = {
+    input_tokens: usage.promptTokenCount ?? 0,
+    output_tokens: usage.candidatesTokenCount ?? 0,
+    cache_read_input_tokens: usage.cachedContentTokenCount ?? 0,
+    cache_creation_input_tokens: 0,
+  };
 
   if (!schema) {
-    return { ok: true, text, thinking: thinkingOf(response), usage };
+    return { ok: true, text: text.trim(), thinking: thinkingText, usage: usageOut };
   }
 
   try {
-    return { ok: true, value: JSON.parse(text), thinking: thinkingOf(response), usage };
+    return { ok: true, value: JSON.parse(text), thinking: thinkingText, usage: usageOut };
   } catch {
     return { ok: false, reason: "unparseable", detail: text.slice(0, 400) };
   }
 }
 
+/* Helpers kept for API compatibility with callers */
+function refused(response) {
+  return response?.promptFeedback?.blockReason != null;
+}
+
+function textOf(response) {
+  return response?.text ?? "";
+}
+
+function thinkingOf(response) {
+  const candidate = response?.candidates?.[0];
+  if (!candidate) return "";
+  return (candidate.content?.parts ?? [])
+    .filter((p) => p.thought && p.text)
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+}
+
 function describe(err) {
-  if (err instanceof Anthropic.AuthenticationError) return "That key isn't being accepted.";
-  if (err instanceof Anthropic.RateLimitError) return "Rate limited. I'll ease off.";
-  if (err instanceof Anthropic.APIConnectionError) return "I couldn't reach the API.";
-  if (err instanceof Anthropic.APIError) return `${err.status}: ${err.message}`;
+  if (err?.status === 401 || err?.status === 403) return "That key isn't being accepted.";
+  if (err?.status === 429) return "Rate limited. I'll ease off.";
+  if (err?.message?.includes("fetch")) return "I couldn't reach the API.";
+  if (err?.status) return `${err.status}: ${err.message}`;
   return err?.message ?? String(err);
 }
 
@@ -217,10 +276,8 @@ function describe(err) {
 /**
  * Streaming variant of ask().
  *
- * Designed for the fast-answer path where the user is watching the whisper
- * panel — tokens arrive one at a time via `onText(delta)`, so perceived
- * latency drops from "wait 3 seconds for full response" to "first word
- * appears in ~300ms". Returns the same shape as ask() once the stream ends.
+ * Tokens arrive via `onText(delta)` as they're generated. Returns the same
+ * shape as ask() once the stream ends.
  */
 async function streamAsk({
   system,
@@ -231,41 +288,68 @@ async function streamAsk({
   onText,
   onThinking,
 }) {
-  const api = anthropic();
+  const api = gemini();
   if (!api) return { ok: false, reason: "no-key" };
 
-  const systemBlocks = Array.isArray(system) ? system : [{ type: "text", text: system }];
-  systemBlocks[systemBlocks.length - 1].cache_control = { type: "ephemeral" };
+  const systemText = Array.isArray(system)
+    ? system.map((b) => (typeof b === "string" ? b : b.text || "")).join("\n")
+    : system;
 
-  const request = {
-    model: fast ? FAST_MODEL : MODEL,
-    max_tokens: maxTokens,
-    system: systemBlocks,
-    messages,
+  const config = {
+    maxOutputTokens: maxTokens,
+    systemInstruction: systemText,
   };
 
   if (thinking) {
-    request.thinking = { type: "enabled", budget_tokens: 1024 };
-    /* max_tokens must exceed budget_tokens */
-    if (request.max_tokens <= 1024) request.max_tokens = 2048;
+    config.thinkingConfig = { thinkingBudget: 1024, includeThoughts: true };
+  } else {
+    config.thinkingConfig = { thinkingBudget: 0 };
   }
 
-  try {
-    const stream = api.messages.stream(request);
-    if (onThinking) stream.on("thinking", (delta) => onThinking(delta));
-    if (onText) stream.on("text", (delta) => onText(delta));
-    const response = await stream.finalMessage();
-    trackUsage(response?.usage);
+  const contents = toGeminiContents(messages);
 
-    if (refused(response)) {
-      return {
-        ok: false,
-        reason: "refused",
-        detail: response.stop_details?.explanation ?? "",
-      };
+  try {
+    const stream = await api.models.generateContentStream({
+      model: fast ? FAST_MODEL : MODEL,
+      contents,
+      config,
+    });
+
+    let fullText = "";
+    let fullThinking = "";
+    let usage = {};
+
+    for await (const chunk of stream) {
+      /* Track usage from the last chunk */
+      if (chunk.usageMetadata) usage = chunk.usageMetadata;
+
+      const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+      for (const part of parts) {
+        if (part.thought && part.text) {
+          fullThinking += part.text;
+          if (onThinking) onThinking(part.text);
+        } else if (part.text) {
+          fullText += part.text;
+          if (onText) onText(part.text);
+        }
+      }
+
+      /* Check for safety block mid-stream */
+      if (chunk.promptFeedback?.blockReason) {
+        return {
+          ok: false,
+          reason: "refused",
+          detail: chunk.promptFeedback.blockReasonMessage ?? "Content filtered",
+        };
+      }
     }
 
-    return { ok: true, text: textOf(response), usage: response.usage ?? {} };
+    trackUsage(usage);
+
+    return { ok: true, text: fullText.trim(), usage: {
+      input_tokens: usage.promptTokenCount ?? 0,
+      output_tokens: usage.candidatesTokenCount ?? 0,
+    }};
   } catch (err) {
     return { ok: false, reason: "error", detail: describe(err) };
   }
@@ -276,11 +360,11 @@ async function streamAsk({
 /** Confirm a pasted key works before the user walks away trusting it. */
 async function verifyKey(key) {
   try {
-    const probe = new Anthropic({ apiKey: key.trim(), maxRetries: 0 });
-    await probe.messages.create({
+    const probe = new GoogleGenAI({ apiKey: key.trim() });
+    await probe.models.generateContent({
       model: MODEL,
-      max_tokens: 16,
-      messages: [{ role: "user", content: "Reply with the single word: ready" }],
+      contents: "Reply with the single word: ready",
+      config: { maxOutputTokens: 16, thinkingConfig: { thinkingBudget: 0 } },
     });
     return { ok: true };
   } catch (err) {

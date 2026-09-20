@@ -111,7 +111,8 @@ export default function WhisperPage() {
 
   /* Conversational mode — auto-start recording on idle or after answer.
      In "answer" phase, recording starts silently so the response stays
-     visible. The phase flips to "recording" only when speech is detected. */
+     visible. The phase flips to "recording" only when speech is detected.
+     A longer delay after answers gives the user time to read. */
   useEffect(() => {
     if (!conversational || !openaiReady) return;
     if (convoTimerRef.current) { clearTimeout(convoTimerRef.current); convoTimerRef.current = null; }
@@ -120,7 +121,7 @@ export default function WhisperPage() {
       convoTimerRef.current = setTimeout(() => {
         convoTimerRef.current = null;
         startRecording(phase === "answer");
-      }, phase === "answer" ? 1500 : 800);
+      }, phase === "answer" ? 3000 : 800);
     }
 
     return () => {
@@ -145,13 +146,43 @@ export default function WhisperPage() {
   const startRecording = async (silent = false) => {
     if (!openaiReady) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+
+      /* Route audio through a bandpass filter (200-3500 Hz) before recording.
+         This physically removes low rumble (fans, HVAC, traffic) and high hiss
+         from the audio that reaches Whisper — not just the VAD. */
+      const filterCtx = new AudioContext();
+      await filterCtx.resume();
+      const filterSource = filterCtx.createMediaStreamSource(stream);
+
+      const highpass = filterCtx.createBiquadFilter();
+      highpass.type = "highpass";
+      highpass.frequency.value = 200;
+      highpass.Q.value = 0.7;
+
+      const lowpass = filterCtx.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = 3500;
+      lowpass.Q.value = 0.7;
+
+      filterSource.connect(highpass).connect(lowpass);
+
+      const filteredDest = filterCtx.createMediaStreamDestination();
+      lowpass.connect(filteredDest);
+      const filteredStream = filteredDest.stream;
+
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : MediaRecorder.isTypeSupported("audio/webm")
           ? "audio/webm"
           : undefined;
-      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+      const recorder = new MediaRecorder(filteredStream, mime ? { mimeType: mime } : {});
       chunksRef.current = [];
       speechFramesRef.current = 0;
 
@@ -161,6 +192,8 @@ export default function WhisperPage() {
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
+        filteredStream.getTracks().forEach((t) => t.stop());
+        filterCtx.close().catch(() => {});
         stopSilenceDetection();
         clearTimeout(safetyTimer);
         const blob = new Blob(chunksRef.current, { type: mime ?? "audio/webm" });
@@ -186,13 +219,13 @@ export default function WhisperPage() {
       if (!silent) setPhase("recording");
 
       /* Silence detection via Web Audio API — speech-band only.
-         Human speech lives in ~300–3000 Hz.  By measuring energy only in
-         that band, background noise (fans, typing, music, hum) is ignored. */
+         Focus on 500–2500 Hz where speech formants are strongest. This avoids
+         low rumble (fans, typing, HVAC at 50-400 Hz) and high-frequency hiss. */
       const audioCtx = new AudioContext();
-      await audioCtx.resume(); /* Electron may start suspended */
+      await audioCtx.resume();
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
+      analyser.fftSize = 1024; /* More bins = finer frequency resolution */
       source.connect(analyser);
       analyserRef.current = analyser;
 
@@ -202,12 +235,13 @@ export default function WhisperPage() {
       let peakVolume = 0;
       let consecutiveAbove = 0;
 
-      /* Map the speech band to FFT bin indices. */
+      /* Map the speech band to FFT bin indices (500-2500 Hz). */
       const binHz = audioCtx.sampleRate / analyser.fftSize;
-      const speechLo = Math.max(1, Math.round(300 / binHz));
-      const speechHi = Math.min(data.length - 1, Math.round(3000 / binHz));
+      const speechLo = Math.max(1, Math.round(500 / binHz));
+      const speechHi = Math.min(data.length - 1, Math.round(2500 / binHz));
 
-      /* Adaptive threshold — measure ambient noise for 20 frames (~0.33s).
+      /* Adaptive threshold — measure ambient noise for 40 frames (~0.67s).
+         Longer calibration → more stable noise floor estimate.
          Track the MINIMUM so speech during calibration doesn't inflate it. */
       let calibrationFrames = 0;
       let noiseFloor = 255;
@@ -233,12 +267,18 @@ export default function WhisperPage() {
         for (let i = speechLo; i <= speechHi; i++) sum += data[i];
         const volume = sum / (speechHi - speechLo + 1);
 
-        /* Calibration — first 20 frames, learn the noise floor. */
-        if (calibrationFrames < 20) {
+        /* Calibration — first 40 frames (~0.67s), learn the noise floor. */
+        if (calibrationFrames < 40) {
           calibrationFrames++;
           if (volume < noiseFloor) noiseFloor = volume;
-          if (calibrationFrames === 20) {
-            speechThreshold = Math.max(25, noiseFloor * 1.5 + 15);
+          if (calibrationFrames === 40) {
+            /* In silent re-listen mode (after an answer), use a much stricter
+               threshold — the mic is open in the background and must only
+               trigger on deliberate speech, not fans, TV, or ambient chatter.
+               Normal mode is still responsive but above ambient noise. */
+            speechThreshold = silent
+              ? Math.max(45, noiseFloor * 3.0 + 30)
+              : Math.max(30, noiseFloor * 2.0 + 20);
           }
           rafRef.current = requestAnimationFrame(check);
           return;
@@ -254,9 +294,10 @@ export default function WhisperPage() {
         if (volume > activeThreshold) {
           consecutiveAbove++;
           if (volume > peakVolume) peakVolume = volume;
-          /* Require 3 consecutive frames above threshold (~50ms).
-             A noise spike is 1–2 frames; real speech is sustained. */
-          if (consecutiveAbove >= 3) {
+          /* Require consecutive frames above threshold to confirm speech.
+             Silent re-listen needs 8 frames (~130ms) — only real speech
+             is that sustained. Normal mode needs 5 (~80ms). */
+          if (consecutiveAbove >= (silent ? 8 : 5)) {
             if (!speechDetected) {
               speechDetected = true;
               clearTimeout(safetyTimer);

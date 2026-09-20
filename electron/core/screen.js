@@ -19,10 +19,8 @@ const win32 = require("./win32");
  */
 
 /**
- * 1366px on the long edge. Anthropic's guidance for computer use is that
- * 1080p balances accuracy and cost and that 1366×768 is the cost-effective
- * option with strong performance — and screenshots are the single largest
- * recurring token cost in a watching agent, taken every few seconds.
+ * 1366px on the long edge. This balances accuracy and cost — screenshots are
+ * the single largest recurring token cost in a watching agent.
  */
 const DEFAULT_MAX_EDGE = 1366;
 

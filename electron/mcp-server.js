@@ -12,7 +12,7 @@
  *
  * Tools:
  *   recall           — Hybrid semantic+keyword search over memory
- *   ask              — AI-powered Q&A over memory (uses Claude API)
+ *   ask              — AI-powered Q&A over memory (uses Gemini API)
  *   remember         — Store information into Doppel's brain from external AIs
  *   recent_activity  — Last N observations
  *   screen_now       — Current screen context and what user is doing
@@ -384,60 +384,53 @@ async function search(query, limit = 15) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Claude API — for the `ask` tool                                           */
+/*  Gemini API — for the `ask` tool                                           */
 /* -------------------------------------------------------------------------- */
 
-let Anthropic = null;
-let claudeClient = null;
+let GoogleGenAI = null;
+let geminiClient = null;
 
 function getApiKey() {
-  /* Read the API key from Doppel's state file, same as the main app. */
   const state = readState();
-  const encrypted = state.ai?.apiKey;
-  /* The state file stores the key directly (not encrypted) in the standalone
-     context. If encryption is enabled in the main app, the key here may be
-     the raw string or a wrapped object. Try the simple path first. */
-  if (typeof encrypted === "string" && encrypted.startsWith("sk-")) return encrypted;
-  /* Fall back to environment variable. */
-  return process.env.ANTHROPIC_API_KEY || "";
+  const key = state.ai?.apiKey;
+  if (typeof key === "string" && key.length > 10) return key;
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 }
 
-function getClaudeClient() {
+function getGeminiClient() {
   const key = getApiKey();
   if (!key) return null;
-  if (!Anthropic) {
+  if (!GoogleGenAI) {
     try {
-      Anthropic = require("@anthropic-ai/sdk");
+      GoogleGenAI = require("@google/genai").GoogleGenAI;
     } catch {
       return null;
     }
   }
-  if (!claudeClient) {
-    claudeClient = new Anthropic({ apiKey: key, maxRetries: 2 });
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({ apiKey: key });
   }
-  return claudeClient;
+  return geminiClient;
 }
 
-async function askClaude(system, userMessage) {
-  const client = getClaudeClient();
+async function askAI(system, userMessage) {
+  const client = getGeminiClient();
   if (!client) return null;
 
   try {
-    const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 2000,
-      system,
-      messages: [{ role: "user", content: userMessage }],
+    const response = await client.models.generateContent({
+      model: "gemini-3.6-flash",
+      contents: userMessage,
+      config: {
+        systemInstruction: system,
+        maxOutputTokens: 2000,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
 
-    const text = (response?.content ?? [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("")
-      .trim();
-    return text || null;
+    return response?.text?.trim() || null;
   } catch (err) {
-    console.error("[doppel-mcp] Claude API error:", err?.message ?? err);
+    console.error("[doppel-mcp] Gemini API error:", err?.message ?? err);
     return null;
   }
 }
@@ -675,7 +668,7 @@ server.registerTool(
   "ask",
   {
     description:
-      "Ask a question about the user and get a natural-language answer synthesized from Doppel's memory. Unlike `recall` which returns raw data, this tool uses AI to read through the user's memory and compose a clear answer. Use this for questions like 'what was I working on yesterday?', 'what do I know about project X?', 'when did I last talk to Y?'. Requires an Anthropic API key to be configured in Doppel.",
+      "Ask a question about the user and get a natural-language answer synthesized from Doppel's memory. Unlike `recall` which returns raw data, this tool uses AI to read through the user's memory and compose a clear answer. Use this for questions like 'what was I working on yesterday?', 'what do I know about project X?', 'when did I last talk to Y?'. Requires a Gemini API key to be configured in Doppel.",
     inputSchema: z.object({
       question: z.string().describe("The question to answer from the user's memory"),
     }),
@@ -703,7 +696,7 @@ server.registerTool(
     }
     const context = contextParts.join("\n\n");
 
-    const answer = await askClaude(
+    const answer = await askAI(
       "You are answering a question about a user based on observations from Doppel, their personal AI that watches their screen and remembers what they do. Answer based ONLY on the provided observations — do not make up information. Be specific and reference times, apps, and details from the data. If the data doesn't fully answer the question, say what you can and note what's missing.",
       `Question: ${question}\n\nDoppel's memory:\n${context}`,
     );
@@ -1217,7 +1210,7 @@ server.registerTool(
   "morning_brief",
   {
     description:
-      "Get or generate a morning brief — a concise daily digest of what happened, what's open, and what to focus on. If a pre-generated brief exists for the date, returns it. Otherwise synthesizes one from recent activity using Claude. Requires an Anthropic API key for synthesis.",
+      "Get or generate a morning brief — a concise daily digest of what happened, what's open, and what to focus on. If a pre-generated brief exists for the date, returns it. Otherwise synthesizes one from recent activity using Claude. Requires a Gemini API key for synthesis.",
     inputSchema: z.object({
       date: z.string().optional().describe("Date in YYYY-MM-DD format. Defaults to today."),
     }),
@@ -1265,7 +1258,7 @@ server.registerTool(
       contextParts.push(`\nKEY ENTITIES:\n${entities.map(formatEntity).join("\n")}`);
     }
 
-    const answer = await askClaude(
+    const answer = await askAI(
       "You are Doppel, a personal AI that watches the user work and remembers everything. Generate a concise morning brief. Include: a short greeting, what they did (yesterday/recently), any patterns you notice, open threads (things that seem unfinished), and one suggestion. Keep it warm but brief — under 200 words.",
       `Generate a morning brief for ${target}.\n\n${contextParts.join("\n")}`,
     );
@@ -1418,7 +1411,7 @@ server.registerTool(
     }),
   },
   async ({ context, medium, additionalInstructions }) => {
-    const client = getClaudeClient();
+    const client = getGeminiClient();
     if (!client) {
       return { content: [{ type: "text", text: "No API key configured. Cannot draft a response." }], isError: true };
     }
@@ -1453,7 +1446,7 @@ server.registerTool(
       }
     }
 
-    const system = `You are ghostwriting a response for a specific person. You must write AS them, not as an AI.
+    const systemPrompt = `You are ghostwriting a response for a specific person. You must write AS them, not as an AI.
 
 Here is their profile:
 ${JSON.stringify(profile, null, 2)}
@@ -1468,14 +1461,16 @@ Rules:
 ${additionalInstructions ? `\nAdditional instructions: ${additionalInstructions}` : ""}`;
 
     try {
-      const response = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1000,
-        system,
-        messages: [{ role: "user", content: `Draft a ${medium} response to this:\n\n${context}` }],
+      const response = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Draft a ${medium} response to this:\n\n${context}`,
+        config: {
+          systemInstruction: systemPrompt,
+          maxOutputTokens: 1000,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       });
-      const text = response.content.map((b) => b.text || "").join("");
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text: response.text || "" }] };
     } catch (err) {
       return { content: [{ type: "text", text: `Could not generate response: ${err.message}` }], isError: true };
     }
