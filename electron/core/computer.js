@@ -817,8 +817,10 @@ async function pressHotkey(keys) {
     const last = results[results.length - 1];
     return { ok: last?.ok ?? false, detail: keys };
   }
-  /* macOS — keys should be AppleScript format, pass through directly */
-  return runShell(`osascript -e '${keys}'`);
+  /* macOS — keys arrives as AppleScript keystroke args, e.g. "s" using command down.
+     Wrap in the required tell block so osascript actually executes it. */
+  const escaped = keys.replace(/'/g, "'\\''");
+  return runShell(`osascript -e 'tell application "System Events" to keystroke ${escaped}'`);
 }
 
 function sleep(ms) {
