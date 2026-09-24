@@ -193,6 +193,8 @@ export interface DoppelBridge {
     detail?: string;
   }>;
   classifyIntent: (text: string) => Promise<{ intent: string; goal: string | null }>;
+  routeVoice: (text: string) => Promise<string>;
+  isHallucination: (text: string) => Promise<boolean>;
   setAutoWatch: (on: boolean) => Promise<unknown>;
   setDetail: (level: "light" | "thorough") => Promise<unknown>;
   lookNow: () => Promise<{ ok: boolean; reason?: string; detail?: string }>;
