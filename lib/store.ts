@@ -26,6 +26,8 @@ import type {
   TokenPack,
   UserProfile,
   Workflow,
+  Bot,
+  BotDetail,
 } from "./types";
 
 /**
@@ -53,8 +55,14 @@ export interface DoppelBridge {
   overlayMenu: () => Promise<unknown>;
   overlayToggleWatch: () => Promise<boolean>;
   overlayToggleWhisper: () => Promise<boolean>;
+  overlayShowTasks: () => Promise<boolean>;
   overlaySetEnabled: (on: boolean) => Promise<unknown>;
+  overlaySetBarHeight: (h: number) => Promise<unknown>;
   overlayHome: () => Promise<unknown>;
+  onOverlayMode: (fn: (mode: string) => void) => () => void;
+
+  /* task popup */
+  taskPopupEmpty: () => Promise<unknown>;
 
   /* the whisper panel */
   whisperSetEnabled: (on: boolean) => Promise<unknown>;
@@ -62,6 +70,8 @@ export interface DoppelBridge {
   whisperSetAutoDismiss: (sec: number) => Promise<unknown>;
   whisperHide: () => Promise<unknown>;
   whisperSetMicSensitivity: (level: number) => Promise<unknown>;
+  whisperSaveChat: (question: string, answer: string) => Promise<unknown>;
+  whisperChatHistory: () => Promise<{ q: string; a: string; at: number }[]>;
 
   /* the account */
   requestLink: (email: string) => Promise<{ ok: boolean; error?: string; link?: string }>;
@@ -136,6 +146,19 @@ export interface DoppelBridge {
   securityLock: () => Promise<unknown>;
   onUnlocked: (fn: (unlocked: boolean) => void) => () => void;
 
+  /* computer bots */
+  computerCreate: (goal: string) => Promise<{ ok: boolean; bot?: Bot; error?: string }>;
+  computerRespond: (id: string, answer: string) => Promise<{ ok: boolean; error?: string }>;
+  computerStop: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  computerList: () => Promise<Bot[]>;
+  computerStatus: (id: string) => Promise<BotDetail | null>;
+  computerClear: (id: string) => Promise<boolean>;
+  computerConfigured: () => Promise<{ configured: boolean; geminiKey: boolean }>;
+  onBotUpdate: (fn: (bot: Bot) => void) => () => void;
+
+  /* license gates */
+  gatesFeatures: () => Promise<Record<string, { unlocked: boolean; requiredPlan: string }>>;
+
   /* billing */
   billingStatus: () => Promise<BillingStatus>;
   billingPlans: () => Promise<PlanInfo[]>;
@@ -158,6 +181,8 @@ export interface DoppelBridge {
   clearApiKey: () => Promise<unknown>;
   setOpenAIKey: (key: string) => Promise<{ ok: boolean; detail?: string }>;
   clearOpenAIKey: () => Promise<unknown>;
+  setTypeSafeKey: (key: string) => Promise<{ ok: boolean; detail?: string }>;
+  clearTypeSafeKey: () => Promise<unknown>;
   transcribeAudio: (buffer: ArrayBuffer, prompt?: string) => Promise<{ ok: boolean; text?: string; detail?: string }>;
   whisperAsk: (buffer: ArrayBuffer, history?: { role: string; content: string }[]) => Promise<{
     ok: boolean;
@@ -167,6 +192,7 @@ export interface DoppelBridge {
     phase?: string;
     detail?: string;
   }>;
+  classifyIntent: (text: string) => Promise<{ intent: string; goal: string | null }>;
   setAutoWatch: (on: boolean) => Promise<unknown>;
   setDetail: (level: "light" | "thorough") => Promise<unknown>;
   lookNow: () => Promise<{ ok: boolean; reason?: string; detail?: string }>;
@@ -265,6 +291,8 @@ const emptySnapshot = (): DoppelSnapshot => ({
     hint: "",
     openaiConfigured: false,
     openaiHint: "",
+    typesafeConfigured: false,
+    typesafeHint: "",
   },
   overlay: { enabled: true, position: null },
   whisper: { enabled: true, hotkey: "Ctrl+Shift+Space", position: null, autoDismiss: 0, micSensitivity: 80 },
@@ -286,6 +314,7 @@ const emptySnapshot = (): DoppelSnapshot => ({
   guide: { active: false },
   inbox: [],
   workflows: [],
+  bots: [],
   devices: [],
   stats: { eventsSeen: 0, sessionsSeen: 0, looks: 0, visionTokens: 0 },
   addons: { installed: {} },
@@ -302,7 +331,7 @@ export interface DoppelState extends DoppelSnapshot {
   connected: boolean;
   now: number;
 
-  updateStatus: { state: string; version?: string | null; progress?: number | null };
+  updateStatus: { state: string; version?: string | null; progress?: number | null; detail?: string | null };
   panelOpen: boolean;
   flash: string | null;
 
@@ -376,6 +405,9 @@ export const doppel = {
   setOpenAIKey: (key: string) =>
     api()?.setOpenAIKey(key) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
   clearOpenAIKey: () => api()?.clearOpenAIKey(),
+  setTypeSafeKey: (key: string) =>
+    api()?.setTypeSafeKey(key) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
+  clearTypeSafeKey: () => api()?.clearTypeSafeKey(),
   transcribeAudio: (buffer: ArrayBuffer, prompt?: string) =>
     api()?.transcribeAudio(buffer, prompt) ?? Promise.resolve({ ok: false, detail: NO_BRIDGE }),
   whisperAsk: (buffer: ArrayBuffer, history?: { role: string; content: string }[]) =>
@@ -383,6 +415,7 @@ export const doppel = {
   setAutoWatch: (on: boolean) => api()?.setAutoWatch(on),
   setDetail: (level: "light" | "thorough") => api()?.setDetail(level),
   overlaySetEnabled: (on: boolean) => api()?.overlaySetEnabled(on),
+  overlaySetBarHeight: (h: number) => api()?.overlaySetBarHeight(h),
   overlayHome: () => api()?.overlayHome(),
   whisperSetEnabled: (on: boolean) => api()?.whisperSetEnabled(on),
   whisperHome: () => api()?.whisperHome(),
@@ -538,6 +571,19 @@ export const doppel = {
   securitySetLockTimeout: (min: number) => api()?.securitySetLockTimeout(min),
   securityLock: () => api()?.securityLock(),
 
+  /* computer bots */
+  computerCreate: (goal: string) => api()?.computerCreate(goal) ?? Promise.resolve({ ok: false, error: "Not connected" }),
+  computerRespond: (id: string, answer: string) => api()?.computerRespond(id, answer) ?? Promise.resolve({ ok: false }),
+  computerStop: (id: string) => api()?.computerStop(id) ?? Promise.resolve({ ok: false }),
+  computerList: () => api()?.computerList() ?? Promise.resolve([]),
+  computerStatus: (id: string) => api()?.computerStatus(id) ?? Promise.resolve(null),
+  computerClear: (id: string) => api()?.computerClear(id) ?? Promise.resolve(false),
+  computerConfigured: () => api()?.computerConfigured() ?? Promise.resolve({ configured: false, geminiKey: false }),
+  onBotUpdate: (fn: (bot: Bot) => void) => api()?.onBotUpdate(fn) ?? (() => {}),
+
+  /* license gates */
+  gatesFeatures: () => api()?.gatesFeatures() ?? Promise.resolve({}),
+
   /* billing */
   billingStatus: () => api()?.billingStatus() ?? Promise.resolve({
     plan: "free", planName: "Free", price: 0, tokenBalance: 0,
@@ -580,6 +626,8 @@ export const doppel = {
 
 export type {
   AddonInfo,
+  Bot,
+  BotDetail,
   Entity,
   InboxTask,
   MorningBrief,

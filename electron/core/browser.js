@@ -42,17 +42,24 @@ async function ensure() {
 
   try {
     const { app } = require("electron");
+    const fs = require("node:fs");
     if (app.isPackaged) {
-      /* Electron's Chromium lives next to the main binary. On Windows it's
-         the electron.exe path; on macOS it's inside the .app framework. */
-      const chromePath = process.platform === "darwin"
-        ? require("path").join(
-            require("path").dirname(process.execPath),
-            "..", "Frameworks", "Chromium Embedded Framework.framework",
-            "Helpers", "Chromium Helper.app", "Contents", "MacOS", "Chromium Helper",
-          )
-        : process.execPath;
-      opts.executablePath = chromePath;
+      if (process.platform === "win32") {
+        /* On Windows, Electron's own binary works as the Chromium executable. */
+        opts.executablePath = process.execPath;
+      } else if (process.platform === "darwin") {
+        /* On macOS, Electron's binary cannot be used as Puppeteer's browser.
+           Look for system Chrome, then fall back to Puppeteer's default download. */
+        const macChromePaths = [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        const found = macChromePaths.find((p) => fs.existsSync(p));
+        if (found) opts.executablePath = found;
+        /* If none found, Puppeteer will try its own bundled Chromium. */
+      }
     }
   } catch {
     /* Not in Electron context (e.g. tests) — use Puppeteer's default. */

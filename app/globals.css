@@ -41,7 +41,9 @@ html.overlay body,
 html.whisper,
 html.whisper body,
 html.guide,
-html.guide body {
+html.guide body,
+html.tasks-popup,
+html.tasks-popup body {
   background: transparent !important;
   overflow: hidden;
 }
@@ -126,13 +128,15 @@ h4 {
 /* Anything interactive presses in on click. */
 .pressable {
   transition:
-    box-shadow var(--dur-press) var(--ease-calm),
-    transform var(--dur-press) var(--ease-calm);
+    box-shadow var(--dur-press) ease-out,
+    transform var(--dur-press) ease-out,
+    opacity var(--dur-press) ease-out;
 }
 
 .pressable:active {
   box-shadow: var(--elev-pressed-sm);
-  transform: translateY(1px);
+  transform: scale(0.98);
+  opacity: 0.85;
 }
 
 .pressable:disabled {
@@ -276,27 +280,27 @@ h4 {
 @keyframes doppel-breathe {
   0%,
   100% {
-    opacity: 0.35;
-    transform: scale(0.9);
+    opacity: 0.4;
+    transform: scale(0.95);
   }
   50% {
-    opacity: 0.85;
-    transform: scale(1.06);
+    opacity: 0.7;
+    transform: scale(1.02);
   }
 }
 
 @keyframes doppel-ring {
   0% {
-    opacity: 0.5;
-    transform: scale(0.7);
+    opacity: 0.35;
+    transform: scale(0.85);
   }
   70% {
     opacity: 0;
-    transform: scale(1.5);
+    transform: scale(1.3);
   }
   100% {
     opacity: 0;
-    transform: scale(1.5);
+    transform: scale(1.3);
   }
 }
 

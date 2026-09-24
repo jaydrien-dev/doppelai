@@ -17,7 +17,9 @@ const PS = "powershell.exe";
 const SCRIPT = path.join(__dirname, "ps", "verify-identity.ps1");
 const PS_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"];
 
-const supported = process.platform === "win32";
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+const supported = IS_WIN || IS_MAC;
 
 /** In-memory lock state — never persisted. */
 let locked = false;
@@ -43,7 +45,17 @@ function init() {
  */
 function checkAvailable() {
   if (!supported) {
-    return Promise.resolve({ available: false, detail: "Only supported on Windows." });
+    return Promise.resolve({ available: false, detail: "Not supported on this platform." });
+  }
+
+  if (IS_MAC) {
+    try {
+      const { systemPreferences } = require("electron");
+      const canPrompt = systemPreferences.canPromptTouchID?.() ?? false;
+      return Promise.resolve({ available: canPrompt, detail: canPrompt ? "Touch ID" : "Touch ID not available" });
+    } catch {
+      return Promise.resolve({ available: false, detail: "Could not check Touch ID." });
+    }
   }
 
   return new Promise((resolve) => {
@@ -88,9 +100,21 @@ function checkAvailable() {
 /**
  * Prompt Windows Hello. Resolves { ok, method, detail }.
  */
-function verify() {
+async function verify() {
   if (!supported) {
-    return Promise.resolve({ ok: false, method: "none", detail: "Only supported on Windows." });
+    return { ok: false, method: "none", detail: "Not supported on this platform." };
+  }
+
+  if (IS_MAC) {
+    try {
+      const { systemPreferences } = require("electron");
+      await systemPreferences.promptTouchID("Doppel wants to verify your identity");
+      locked = false;
+      lastVerified = Date.now();
+      return { ok: true, method: "touchid", detail: "Touch ID verified" };
+    } catch (err) {
+      return { ok: false, method: "touchid", detail: err.message || "Touch ID failed" };
+    }
   }
 
   return new Promise((resolve) => {

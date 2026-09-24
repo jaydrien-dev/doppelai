@@ -10,7 +10,7 @@ import { MotionConfig } from "framer-motion";
  */
 export function Motion({ children }: { children: React.ReactNode }) {
   return (
-    <MotionConfig reducedMotion="user" transition={{ ease: [0.22, 0.61, 0.36, 1] }}>
+    <MotionConfig reducedMotion="user" transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.18 }}>
       {children}
     </MotionConfig>
   );

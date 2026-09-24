@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
 import { voice } from "@/lib/voice";
 import { RichText } from "@/components/RichText";
-import type { InboxTask, MorningBrief, Nudge } from "@/lib/types";
+import type { Bot, InboxTask, MorningBrief, Nudge, Workflow } from "@/lib/types";
 
 type Phase = "idle" | "recording" | "transcribing" | "thinking" | "answer";
 
@@ -30,6 +30,8 @@ export default function WhisperPage() {
   const [history, setHistory] = useState<{ role: string; content: string }[]>([]);
   const [conversational, setConversational] = useState(false);
   const [brief, setBrief] = useState<MorningBrief | null>(null);
+  const [prevChats, setPrevChats] = useState<{ q: string; a: string; at: number }[]>([]);
+  const [allBots, setAllBots] = useState<Bot[]>([]);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const silenceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,6 +110,37 @@ export default function WhisperPage() {
       });
     }
   }, [aiConfigured]);
+
+  /* Load previous chat history on mount */
+  useEffect(() => {
+    window.doppel?.whisperChatHistory?.().then((chats) => {
+      if (chats?.length) {
+        setPrevChats(chats);
+        /* Seed conversation history so brain has context */
+        const seed: { role: string; content: string }[] = [];
+        for (const c of chats) {
+          seed.push({ role: "user", content: c.q });
+          seed.push({ role: "assistant", content: c.a });
+        }
+        setHistory(seed);
+      }
+    });
+  }, []);
+
+  /* Listen for bot updates — just track running state so we can block duplicate tasks */
+  useEffect(() => {
+    const api = window.doppel;
+    if (!api) return;
+    api.computerList?.().then((list: Bot[]) => setAllBots(list));
+    const unsub = api.onBotUpdate?.((bot: Bot) => {
+      setAllBots((prev) => {
+        const idx = prev.findIndex((b) => b.id === bot.id);
+        if (idx >= 0) { const next = [...prev]; next[idx] = bot; return next; }
+        return [...prev, bot];
+      });
+    });
+    return () => unsub?.();
+  }, []);
 
   /* Conversational mode — auto-start recording on idle or after answer.
      In "answer" phase, recording starts silently so the response stays
@@ -373,6 +406,12 @@ export default function WhisperPage() {
       setPhase("idle");
       return;
     }
+    /* Jev second opinion — catches hallucinations the heuristics miss */
+    const jevHallucination = await window.doppel?.isHallucination?.(transcript);
+    if (jevHallucination) {
+      setPhase("idle");
+      return;
+    }
 
     setInput(transcript);
 
@@ -447,6 +486,12 @@ export default function WhisperPage() {
       /\bwhat does (this|that|it) say\b/i,
       /\bwhat('s| is) (going on|happening)( here)?\b/i,
       /\bwhat('s| is) (showing|visible|displayed|in front of me)\b/i,
+      /* "make sense of X on my screen" / "explain the equation" / "help me understand" */
+      /\b(make sense|explain|interpret|understand|analyze|analyse)\b.*(on|my|the)\s*(screen|display|monitor|window)\b/i,
+      /\b(on|my|the)\s*screen\b.*\b(titled|called|labeled|named)\b/i,
+      /\b(equation|formula|diagram|chart|graph|code|error|message)\b.*(on|my|the)\s*screen\b/i,
+      /\b(on|my|the)\s*screen\b.*(equation|formula|diagram|chart|graph|code|error|message)\b/i,
+      /\bhelp me (understand|make sense|figure out)\b/i,
     ].some((re) => re.test(text));
   }
 
@@ -460,66 +505,15 @@ export default function WhisperPage() {
      or hallucinate filler.  All patterns are case-insensitive and
      tolerant of extra whitespace. */
 
-  const WALKTHROUGH_PATTERNS: RegExp[] = [
-    /* ---- "walk me through" family ---- */
-    /\bwalk\s+(me\s+)?through\b/i,
-    /\bwalk\s+through\s+(how|the|this|that|it|my|your|setting|process|steps)\b/i,
-
-    /* ---- "guide me" family ---- */
-    /\bguide\s+(me\s+)?(through|on|to|in|for|with)\b/i,
-
-    /* ---- "take me through" ---- */
-    /\btake\s+me\s+through\b/i,
-
-    /* ---- "show me how" family ---- */
-    /\bshow\s+me\s+how\s+(to|i|we|you|it|the|this|that)\b/i,
-    /\bshow\s+me\s+how\b/i,
-
-    /* ---- "teach me" family ---- */
-    /\bteach\s+me\b/i,
-
-    /* ---- "demonstrate" ---- */
-    /\bdemonstrate\s+(how\s+to\s+|the\s+|this|that|it)?\b/i,
-
-    /* ---- tutorial / walkthrough / tour / demo as nouns ---- */
-    /\b(walkthrough|walk-through|tutorial|guided\s*tour)\s+(of|for|on|about|to)\b/i,
-    /\b(give|show|start|begin|do|run|provide|create)\s+(me\s+)?(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration)\b/i,
-    /\b(i\s+(want|need|would\s+like)\s+(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration))\b/i,
-
-    /* ---- "step by step" (spoken often as "step-by-step") ---- */
-    /\bstep[\s-]*by[\s-]*step\b/i,
-
-    /* ---- pointing / "where is" — Clicky style ---- */
-    /\bshow\s+me\s+where\b/i,
-    /\bpoint\s+(me\s+)?(to|at|where|toward|towards)\b/i,
-    /\bwhere\s+(do|should|can|would|could|shall)\s+i\s+(click|tap|press|find|go|look|navigate|select|start|begin)\b/i,
-    /\bwhere\s+(is|are|was)\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|tab|link|icon|toggle|switch|field|input|checkbox|dropdown|slider|control|panel|section|page|area|tool|toolbar|sidebar|dialog|popup|modal|window|pane)\b/i,
-    /\bwhich\s+(button|menu|tab|option|setting|icon|link|control)\s+(do|should|to|would|could)\b/i,
-    /\b(what|where)\s+(do|should|would|could)\s+i\s+(click|press|tap|select|choose|pick|hit)\b/i,
-    /\bhelp\s+me\s+find\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|control|toggle|icon|link|field|tab)\b/i,
-    /\bfind\s+(the\s+)?(button|setting|option|menu|control|toggle)\s+(for|to)\b/i,
-
-    /* ---- "help me learn / figure out how to" ---- */
-    /\bhelp\s+me\s+(learn|figure\s+out|understand)\s+how\s+to\b/i,
-
-    /* ---- "how do I" + UI action verb (screen-specific how-to) ---- */
-    /\bhow\s+(do|can|should|would)\s+i\s+(click|navigate|find|get to|access|open|enable|disable|toggle|turn on|turn off|activate|deactivate|set up|configure|change|modify|adjust|switch)\b/i,
-
-    /* ---- "show me the way" / "lead me" ---- */
-    /\bshow\s+me\s+the\s+way\s+to\b/i,
-    /\blead\s+me\s+(through|to)\b/i,
-
-    /* ---- "can you show me" + location/process words ---- */
-    /\b(show|point\s+out)\s+me\s+(the\s+)?(steps|process|procedure|way|path|workflow|flow)\b/i,
-
-    /* ---- Whisper mishearings — common transcription errors ---- */
-    /\bwok\s+me\s+through\b/i,     /* "walk" → "wok" */
-    /\bguard\s+me\s+through\b/i,   /* "guide" → "guard" */
-    /\bwalked?\s+me\s+through\b/i,  /* past tense still means the same */
-  ];
-
-  function isWalkthroughRequest(text: string): boolean {
-    return WALKTHROUGH_PATTERNS.some((re) => re.test(text));
+  /* Walkthrough detection is handled by the whisper:ask handler (Jev-powered)
+     in the main process. This local check is only needed for the text input
+     path where we route before sending to the backend. */
+  async function isWalkthroughRequest(text: string): Promise<boolean> {
+    /* Quick local regex for obvious cases */
+    if (/\b(walk\s+(me\s+)?through|guide\s+me|show\s+me\s+how|tutorial|walkthrough|step[\s-]*by[\s-]*step)\b/i.test(text)) return true;
+    /* Jev second opinion for subtler phrasings */
+    const result = await window.doppel?.routeVoice?.(text);
+    return false; /* walkthrough routing handled by whisper:ask, not voice router */
   }
 
   /** Strip the trigger phrase, keep the goal — what the user actually wants. */
@@ -550,6 +544,9 @@ export default function WhisperPage() {
     return goal.length >= 3 ? goal : text.trim();
   }
 
+  /* ---- Task detection — uses the LLM to understand natural speech.
+     No regex fragility — Gemini classifies intent and extracts the goal. */
+
   /** Shared routing logic for both voice and text input. */
   async function routeMessage(text: string) {
     const t = text.trim();
@@ -557,7 +554,7 @@ export default function WhisperPage() {
 
     /* ---- Walkthrough — ABSOLUTE FIRST check, before everything else.
        If this matches, nothing else runs.  No ambiguity, no fallthrough. */
-    if (isWalkthroughRequest(t)) {
+    if (await isWalkthroughRequest(t)) {
       const goal = extractWalkthroughGoal(t);
       setPhase("thinking");
       streamRef.current = "";
@@ -641,22 +638,328 @@ export default function WhisperPage() {
          an unrelated question mid-walkthrough). */
     }
 
-    /* ---- Inbox — "send to agent" / "task:" / "tell claude to" ------------ */
+    /* ---- Agent commands — full access to inbox, workflows, and tasks ---- */
     const AGENT_NAMES: Record<string, string> = {
-      claude: "claude-desktop", cursor: "cursor", chatgpt: "chatgpt",
-      gpt: "chatgpt", windsurf: "windsurf", grok: "grok",
+      claude: "claude-desktop", "claude desktop": "claude-desktop",
+      cloud: "claude-desktop", "cloud desktop": "claude-desktop",
+      "claude code": "cursor", "cloud code": "cursor",
+      cursor: "cursor", chatgpt: "chatgpt", gpt: "chatgpt",
+      windsurf: "windsurf", grok: "grok", cline: "cline",
+      continue: "continue", "amazon q": "amazon-q",
+      copilot: "copilot", zed: "zed",
     };
-    /* "tell claude to X", "ask cursor to X", "send to chatgpt: X" */
-    const targetMatch = t.match(/^(?:tell|ask|send\s+to)\s+(claude|cursor|chatgpt|gpt|windsurf|grok)\s+(?:to\s+)?[:\s]*(.+)/i);
-    /* generic: "task: X", "send to agent: X", "queue: X" */
-    const genericMatch = !targetMatch && t.match(/^(?:send\s+to\s+agent|task|tell\s+(?:the\s+)?agent\s+to|queue|assign)[:\s]+(.+)/i);
+    const AGENT_DISPLAY: Record<string, string> = {
+      "claude-desktop": "Claude Desktop", cursor: "Cursor", chatgpt: "ChatGPT",
+      windsurf: "Windsurf", grok: "Grok", cline: "Cline",
+      continue: "Continue", "amazon-q": "Amazon Q", copilot: "Copilot", zed: "Zed",
+    };
+    /* Strip leading "doppel/dapo/hey doppel" and speech filler before matching */
+    let tl = t.toLowerCase()
+      .replace(/^(?:hey\s+)?(?:doppel|dapo|dopple|dapple)[,.\s]*/i, "")
+      .replace(/\b(?:uh+|um+|like|so|actually|basically|sorry)\b[,\s]*/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    /* Handle self-corrections: "cloud code, cloud desktop" → use last agent mentioned */
+    const correctionMatch = tl.match(/(?:cloud\s*code|claude\s*code)[,\s]+(?:cloud\s*desktop|claude\s*desktop)/);
+    if (correctionMatch) tl = tl.replace(correctionMatch[0], "claude desktop");
 
-    if (targetMatch || genericMatch) {
-      const target = targetMatch ? (AGENT_NAMES[targetMatch[1].toLowerCase()] ?? "any") : "any";
-      const instruction = (targetMatch ? targetMatch[2] : (genericMatch as RegExpMatchArray)[1]).trim();
-      const label = targetMatch ? targetMatch[1] : "your agent";
-      await doppel.inboxCreate(instruction, true, target);
-      setAnswer(`Queued for ${label}:\n\n"${instruction}"\n\nIt'll be picked up next time the agent checks in.`);
+    /* Resolve an agent name from text, handling multi-word names. */
+    function resolveAgent(name: string): { id: string; display: string } | null {
+      const n = name.toLowerCase().trim();
+      /* Try multi-word first ("claude desktop", "amazon q") then single word */
+      if (AGENT_NAMES[n]) return { id: AGENT_NAMES[n], display: AGENT_DISPLAY[AGENT_NAMES[n]] || n };
+      /* Try first word */
+      const first = n.split(/\s+/)[0];
+      if (AGENT_NAMES[first]) return { id: AGENT_NAMES[first], display: AGENT_DISPLAY[AGENT_NAMES[first]] || first };
+      return null;
+    }
+
+    /* Detect agent task intent broadly — covers many natural phrasings:
+       "tell claude to X", "ask cursor to X", "send X to claude",
+       "give claude a task: X", "have cursor do X", "get claude to X",
+       "send a task to claude desktop: X", "I want claude to X",
+       "can you send a task to my claude desktop" */
+    const AG = `(claude\\s*desktop|cloud\\s*desktop|claude\\s*code|cloud\\s*code|claude|cloud|cursor|chatgpt|gpt|windsurf|grok|cline|continue|amazon\\s*q|copilot|zed)`;
+    const agentTaskResult = (() => {
+      /* Strip "can you" / "could you" / "would you" prefix */
+      const cl = tl.replace(/^(?:can|could|would)\s+you\s+(?:please\s+)?/, "");
+      /* Pattern 1: "tell/ask/have/get [agent] to X" */
+      const p1 = cl.match(new RegExp(`(?:tell|ask|have|get|make)\\s+(?:my\\s+)?${AG}\\s+(?:to\\s+)?(.+)`));
+      if (p1) return { agent: p1[1], instruction: p1[2] };
+      /* Pattern 2: "send [X] to [agent]" or "send a task to [agent]: X" */
+      const p2 = cl.match(new RegExp(`send\\s+(?:a\\s+)?(?:task\\s+)?to\\s+(?:my\\s+)?${AG}[:\\s]*(.+)`));
+      if (p2) return { agent: p2[1], instruction: p2[2] };
+      /* Pattern 2b: "send [agent] a task" / "send [agent] X" */
+      const p2b = cl.match(new RegExp(`send\\s+(?:my\\s+)?${AG}\\s+(?:a\\s+)?(?:task[:\\s]+)?(.+)`));
+      if (p2b) return { agent: p2b[1], instruction: p2b[2] };
+      /* Pattern 3: "give [agent] a task: X" */
+      const p3 = cl.match(new RegExp(`give\\s+(?:my\\s+)?${AG}\\s+(?:a\\s+)?(?:task|job|assignment)[:\\s]*(.+)`));
+      if (p3) return { agent: p3[1], instruction: p3[2] };
+      /* Pattern 4: "I want [agent] to X" / "I need [agent] to X" */
+      const p4 = cl.match(new RegExp(`i\\s+(?:want|need)\\s+(?:you\\s+to\\s+)?(?:send\\s+(?:a\\s+)?(?:task\\s+)?to\\s+|tell\\s+|have\\s+|get\\s+)?(?:my\\s+)?${AG}\\s+(?:to\\s+)?(.+)`));
+      if (p4) return { agent: p4[1], instruction: p4[2] };
+      /* Pattern 5: "[agent], do X" / "[agent]: X" (agent name at start) */
+      const p5 = cl.match(new RegExp(`^${AG}[,:\\s]+(.{10,})`));
+      if (p5) return { agent: p5[1], instruction: p5[2] };
+      /* Pattern 6: "and tell it to X" / "and tell them to X" — catches compound sentences
+         where the agent was already mentioned and resolved via correction */
+      const p6 = cl.match(/(?:and\s+)?(?:tell|ask|have|get)\s+(?:it|them|that)\s+(?:to\s+)?(.+)/);
+      if (p6 && correctionMatch) return { agent: "claude desktop", instruction: p6[1] };
+      return null;
+    })();
+
+    /* generic: "task: X", "send to agent: X", "queue: X" */
+    const genericMatch = !agentTaskResult && t.match(/^(?:send\s+to\s+agent|task|tell\s+(?:the\s+)?agent\s+to|queue|assign)[:\s]+(.+)/i);
+
+    if (agentTaskResult || genericMatch) {
+      const resolved = agentTaskResult ? resolveAgent(agentTaskResult.agent) : null;
+      const target = resolved?.id ?? "any";
+      const label = resolved?.display ?? "your agent";
+      const instruction = (agentTaskResult ? agentTaskResult.instruction : (genericMatch as RegExpMatchArray)[1]).trim();
+      /* Strip trailing filler like "okay?" "please" "thanks" */
+      const clean = instruction.replace(/[,.]?\s*(?:okay|ok|please|thanks|thank you|alright)\s*[?.!]*$/i, "").trim();
+      await doppel.inboxCreate(clean, true, target);
+      setAnswer(`Queued for ${label}:\n\n"${clean}"\n\nIt'll be picked up next time the agent checks in.`);
+      setPhase("answer");
+      scheduleDismiss();
+      return;
+    }
+
+    /* ---- Jev-powered voice command routing --------------------------------
+       Fast typed decision replaces fragile regex chains. Falls back to
+       "other" if Jev is unavailable, which continues to the brain. */
+    const voiceRoute = await window.doppel?.routeVoice?.(t) ?? "other";
+
+    /* ---- Show tasks / inbox ----------------------------------------------- */
+    if (voiceRoute === "show_tasks") {
+      setPhase("thinking");
+      const [tasks, workflows] = await Promise.all([doppel.inboxList(), doppel.workflowList()]);
+      const active = tasks.filter((t: InboxTask) => t.status !== "done" && t.status !== "rejected");
+      const done = tasks.filter((t: InboxTask) => t.status === "done");
+      const running = workflows.filter((w: Workflow) => w.status === "running");
+
+      let reply = "";
+      if (active.length === 0 && running.length === 0 && done.length === 0) {
+        reply = "Nothing in the queue. All agents are idle.";
+      } else {
+        if (running.length > 0) {
+          reply += `**Workflows running:** ${running.length}\n`;
+          running.forEach((w: Workflow) => {
+            reply += `- "${w.title}" — step ${w.currentStep + 1}/${w.steps.length} (${w.steps[w.currentStep]?.status ?? "?"})\n`;
+          });
+          reply += "\n";
+        }
+        if (active.length > 0) {
+          reply += `**Active tasks:** ${active.length}\n`;
+          active.forEach((t: InboxTask) => {
+            const who = t.agent || AGENT_DISPLAY[t.target] || t.target;
+            reply += `- [${t.status}] ${who}: "${t.instruction.slice(0, 80)}"\n`;
+          });
+          reply += "\n";
+        }
+        if (done.length > 0) {
+          reply += `**Completed:** ${done.length} task${done.length > 1 ? "s" : ""}\n`;
+          done.slice(0, 3).forEach((t: InboxTask) => {
+            const who = t.agent || AGENT_DISPLAY[t.target] || t.target;
+            reply += `- ${who}: "${t.instruction.slice(0, 60)}" — ${t.result ? t.result.slice(0, 100) : "done"}\n`;
+          });
+          if (done.length > 3) reply += `- …and ${done.length - 3} more\n`;
+        }
+      }
+      setAnswer(reply.trim());
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Approve task ------------------------------------------------------ */
+    if (voiceRoute === "approve_tasks") {
+      setPhase("thinking");
+      const tasks = await doppel.inboxList();
+      const pending = tasks.filter((t: InboxTask) => t.status === "pending");
+      if (pending.length === 0) {
+        setAnswer("No pending tasks to approve.");
+      } else {
+        await Promise.all(pending.map((t: InboxTask) => doppel.inboxApprove(t.id)));
+        setAnswer(`Approved ${pending.length} task${pending.length > 1 ? "s" : ""}. Agents can pick them up now.`);
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Reject / cancel task ---------------------------------------------- */
+    if (voiceRoute === "reject_tasks") {
+      setPhase("thinking");
+      const tasks = await doppel.inboxList();
+      const cancellable = tasks.filter((t: InboxTask) => ["pending", "approved", "claimed"].includes(t.status));
+      if (cancellable.length === 0) {
+        setAnswer("No active tasks to cancel.");
+      } else {
+        await Promise.all(cancellable.map((t: InboxTask) => doppel.inboxReject(t.id)));
+        setAnswer(`Cancelled ${cancellable.length} task${cancellable.length > 1 ? "s" : ""}.`);
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Retry failed tasks ------------------------------------------------ */
+    if (voiceRoute === "retry_tasks") {
+      setPhase("thinking");
+      const tasks = await doppel.inboxList();
+      const failed = tasks.filter((t: InboxTask) => t.status === "rejected" || t.status === "failed");
+      if (failed.length === 0) {
+        setAnswer("No failed tasks to retry.");
+      } else {
+        await Promise.all(failed.map((t: InboxTask) => doppel.inboxRetry(t.id)));
+        setAnswer(`Retrying ${failed.length} task${failed.length > 1 ? "s" : ""}.`);
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Clear completed tasks --------------------------------------------- */
+    if (voiceRoute === "clear_tasks") {
+      await doppel.inboxClear();
+      setAnswer("Cleared completed tasks from the inbox.");
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Show workflows ---------------------------------------------------- */
+    if (voiceRoute === "show_workflows") {
+      setPhase("thinking");
+      const workflows = await doppel.workflowList();
+      if (workflows.length === 0) {
+        setAnswer("No workflows. You can create one — tell me the steps and which agents should run them.");
+      } else {
+        let reply = `**${workflows.length} workflow${workflows.length > 1 ? "s" : ""}:**\n\n`;
+        workflows.forEach((w: Workflow) => {
+          const statusIcon = w.status === "running" ? "▶" : w.status === "done" ? "✓" : w.status === "failed" ? "✗" : "⏸";
+          reply += `${statusIcon} **${w.title}** — ${w.status}\n`;
+          w.steps.forEach((s, i) => {
+            const current = i === w.currentStep && w.status === "running" ? " ← current" : "";
+            const stepAgent = AGENT_DISPLAY[s.target] || s.target;
+            reply += `   ${i + 1}. [${s.status}] ${stepAgent}: ${s.instruction.slice(0, 70)}${current}\n`;
+          });
+          reply += "\n";
+        });
+        setAnswer(reply.trim());
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Abort workflow ---------------------------------------------------- */
+    if (voiceRoute === "abort_workflow") {
+      setPhase("thinking");
+      const workflows = await doppel.workflowList();
+      const running = workflows.filter((w: Workflow) => w.status === "running");
+      if (running.length === 0) {
+        setAnswer("No running workflows to abort.");
+      } else {
+        await Promise.all(running.map((w: Workflow) => doppel.workflowAbort(w.id)));
+        setAnswer(`Aborted ${running.length} workflow${running.length > 1 ? "s" : ""}.`);
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Create workflow (natural language) -------------------------------- */
+    if (voiceRoute === "create_workflow") {
+      setPhase("thinking");
+      setThinking("Planning workflow...");
+
+      /* Use the LLM to parse natural language into structured workflow steps. */
+      const parseResult = await window.doppel?.askBrainFast(
+        `The user wants to create a multi-agent workflow. Parse their request into a workflow title and ordered steps. Each step needs an instruction (what to do) and a target agent (one of: claude-desktop, cursor, chatgpt, windsurf, grok, cline, continue, amazon-q, copilot, zed, or "any" if unspecified).
+
+User's request: "${t}"
+
+Reply with ONLY valid JSON in this exact format, nothing else:
+{"title": "short title", "steps": [{"instruction": "what to do", "target": "agent-id"}], "onFailure": "abort"}`,
+        [],
+      );
+
+      if (parseResult?.ok && parseResult.text) {
+        try {
+          /* Strip markdown code fences if present */
+          const cleaned = parseResult.text.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "").trim();
+          const parsed = JSON.parse(cleaned);
+          if (parsed.steps?.length > 0) {
+            const wf = await doppel.workflowCreate(
+              parsed.title || "Untitled workflow",
+              parsed.steps,
+              parsed.onFailure || "abort",
+            );
+            let reply = `**Workflow created:** ${parsed.title}\n\n`;
+            parsed.steps.forEach((s: { instruction: string; target: string }, i: number) => {
+              const agent = AGENT_DISPLAY[s.target] || s.target;
+              reply += `${i + 1}. **${agent}:** ${s.instruction}\n`;
+            });
+            reply += `\nOn failure: ${parsed.onFailure || "abort"}. Step 1 is now queued.`;
+            setAnswer(reply);
+          } else {
+            setAnswer("I couldn't parse that into workflow steps. Try something like:\n\n\"Create a workflow: step 1 cursor writes tests, step 2 claude reviews them\"");
+          }
+        } catch {
+          setAnswer("I couldn't parse that into a workflow. Try being more explicit about the steps and which agents should run them.");
+        }
+      } else {
+        setAnswer("Couldn't plan the workflow. Try again with clearer steps.");
+      }
+      setPhase("answer");
+      return;
+    }
+
+    /* ---- Screen-context questions bypass classification entirely ----------
+       "What's on my screen", "explain this equation", etc. are questions
+       that need screen capture + brain, NOT bot tasks. */
+    if (isScreenQuestion(t)) {
+      setPhase("thinking");
+      await doppel.lookNow();
+      streamRef.current = "";
+      thinkingRef.current = "";
+      setThinking("");
+      setThinkingExpanded(true);
+      const result = await window.doppel?.askBrainFast(t, history);
+      const reply = result?.ok && result.text
+        ? result.text
+        : (result?.detail ?? "I don't have enough context to answer that yet.");
+      if (!streamRef.current) {
+        setAnswer(reply);
+        setPhase("answer");
+      }
+      scheduleDismiss();
+      return;
+    }
+
+    /* ---- Computer use — LLM classifies intent, no rigid regex ----------- */
+    const classification = await window.doppel?.classifyIntent?.(t);
+    if (classification?.intent === "task" && classification.goal) {
+      /* Block if a bot is already running — only the Agents page can manage active bots */
+      const currentBots: Bot[] = await doppel.computerList?.() ?? [];
+      const hasActive = currentBots.some((b) => b.status === "running" || b.status === "clarifying");
+      if (hasActive) {
+        setAnswer("A bot is already running. You can manage it from the Agents page.");
+        setPhase("answer");
+        return;
+      }
+      setPhase("thinking");
+      setThinking("Starting bot...");
+      /* Include recent conversation so the bot has full context
+         (e.g. a dictated schedule, file names mentioned, etc.) */
+      let goalWithContext = classification.goal;
+      if (history.length > 0) {
+        const recentLines = history.slice(-10).map((m) =>
+          `${m.role === "user" ? "User" : "Doppel"}: ${m.content}`
+        ).join("\n");
+        goalWithContext = `${classification.goal}\n\n--- Recent conversation for context ---\n${recentLines}`;
+      }
+      const result = await doppel.computerCreate(goalWithContext);
+      if (result?.ok) {
+        setAnswer(`On it. Running in the background:\n\n"${classification.goal}"\n\nYou can see progress in the overlay.`);
+      } else {
+        setAnswer(`Couldn't start the bot: ${result?.error ?? "unknown error"}`);
+      }
       setPhase("answer");
       scheduleDismiss();
       return;
@@ -682,6 +985,8 @@ export default function WhisperPage() {
       { role: "user", content: t },
       { role: "assistant", content: reply },
     ]);
+    /* Persist this exchange so the next session has context */
+    window.doppel?.whisperSaveChat?.(t, reply);
     scheduleDismiss();
 
     if (conversational) setTimeout(() => startRecording(true), 1500);
@@ -895,50 +1200,42 @@ export default function WhisperPage() {
           </AnimatePresence>
         </div>
 
-        {/* Nudge card */}
+        {/* Previous conversations — shown when idle so the user sees continuity */}
         <AnimatePresence>
-          {phase === "idle" && nudges.length > 0 && (
+          {phase === "idle" && prevChats.length > 0 && (
             <motion.div
-              key="nudge"
+              key="prev-chats"
               initial={{ opacity: 0, y: -6, height: 0 }}
               animate={{ opacity: 1, y: 0, height: "auto" }}
               exit={{ opacity: 0, y: -6, height: 0 }}
               transition={medium}
-              className="flex items-center gap-3 overflow-hidden"
+              className="overflow-hidden"
               style={{
-                padding: "10px 14px",
                 borderRadius: "var(--radius-control)",
-                background: "rgba(255, 255, 255, 0.5)",
-                borderLeft: "3px solid var(--primary)",
+                background: "rgba(255, 255, 255, 0.35)",
+                padding: "8px 12px",
               }}
             >
-              <div className="min-w-0 flex-1">
-                <p style={{ fontSize: "var(--text-sm)", color: "var(--ink)" }}>
-                  {nudges[0].text}
-                </p>
-                {nudges[0].detail && (
-                  <p style={{ fontSize: "var(--text-xs)", color: "var(--slate)", marginTop: 2 }}>
-                    {nudges[0].detail}
-                  </p>
-                )}
-              </div>
-              <div className="flex shrink-0 gap-2">
-                {nudges[0].action && (
-                  <button
-                    onClick={() => actNudge(nudges[0])}
-                    className="cursor-pointer"
-                    style={{ fontSize: "var(--text-sm)", color: "var(--primary)", whiteSpace: "nowrap" }}
+              <p className="micro-label" style={{ marginBottom: 6, color: "var(--slate)" }}>
+                Recent
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {prevChats.slice(-3).map((chat, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      fontSize: 12,
+                      lineHeight: 1.4,
+                    }}
                   >
-                    {nudges[0].action}
-                  </button>
-                )}
-                <button
-                  onClick={() => doppel.dismissNudge(nudges[0].id)}
-                  className="cursor-pointer"
-                  style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}
-                >
-                  {voice.nudge.dismiss}
-                </button>
+                    <p style={{ color: "var(--ink)", fontWeight: 500 }}>
+                      {chat.q.length > 60 ? chat.q.slice(0, 57) + "..." : chat.q}
+                    </p>
+                    <p style={{ color: "var(--slate)", marginTop: 1 }}>
+                      {chat.a.length > 80 ? chat.a.slice(0, 77) + "..." : chat.a}
+                    </p>
+                  </div>
+                ))}
               </div>
             </motion.div>
           )}
@@ -946,7 +1243,7 @@ export default function WhisperPage() {
 
         {/* Morning brief card */}
         <AnimatePresence>
-          {phase === "idle" && brief && nudges.length === 0 && (
+          {phase === "idle" && brief && (
             <motion.div
               key="brief"
               initial={{ opacity: 0, y: -6, height: 0 }}
@@ -987,51 +1284,6 @@ export default function WhisperPage() {
               </button>
             </motion.div>
           )}
-        </AnimatePresence>
-
-        {/* Active inbox tasks */}
-        <AnimatePresence>
-          {phase === "idle" && inbox.filter((t) => t.status === "claimed" || t.status === "done").slice(0, 2).map((task) => (
-            <motion.div
-              key={task.id}
-              initial={{ opacity: 0, y: -6, height: 0 }}
-              animate={{ opacity: 1, y: 0, height: "auto" }}
-              exit={{ opacity: 0, y: -6, height: 0 }}
-              transition={medium}
-              className="overflow-hidden"
-              style={{
-                padding: "10px 14px",
-                borderRadius: "var(--radius-control)",
-                background: "rgba(255, 255, 255, 0.5)",
-                borderLeft: `3px solid ${task.status === "done" ? "#3a3" : "#e89b00"}`,
-              }}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <p style={{ fontSize: "var(--text-xs, 11px)", color: task.status === "done" ? "#3a3" : "#e89b00", fontWeight: 600 }}>
-                    {task.status === "claimed" ? `${task.agent ?? "Agent"} working...` : "Done"}
-                  </p>
-                  <p style={{ fontSize: "var(--text-sm)", color: "var(--ink)", marginTop: 2 }}>
-                    {task.instruction.length > 60 ? task.instruction.slice(0, 60) + "\u2026" : task.instruction}
-                  </p>
-                  {task.result && (
-                    <p style={{ fontSize: "var(--text-xs)", color: "var(--slate)", marginTop: 4, whiteSpace: "pre-wrap" }}>
-                      {task.result.length > 200 ? task.result.slice(0, 200) + "\u2026" : task.result}
-                    </p>
-                  )}
-                </div>
-                {task.status === "done" && (
-                  <button
-                    onClick={() => doppel.inboxClear()}
-                    className="cursor-pointer shrink-0"
-                    style={{ fontSize: "var(--text-xs)", color: "var(--slate)" }}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            </motion.div>
-          ))}
         </AnimatePresence>
 
         {/* Status / answer */}

@@ -68,6 +68,9 @@ export interface AiState {
   /** OpenAI Whisper transcription. */
   openaiConfigured: boolean;
   openaiHint: string;
+  /** TypeSafe Jev — powers computer bots. */
+  typesafeConfigured: boolean;
+  typesafeHint: string;
 }
 
 /* --------------------------------------------------------------------------
@@ -345,6 +348,7 @@ export interface DoppelSnapshot {
   guide: GuideWalkthrough;
   inbox: InboxTask[];
   workflows: Workflow[];
+  bots: Bot[];
 }
 
 /* --------------------------------------------------------------------------
@@ -456,6 +460,36 @@ export interface Workflow {
   currentStep: number;
   completedAt: number | null;
   onFailure: "abort" | "skip" | "retry";
+}
+
+/* --------------------------------------------------------------------------
+   Computer — Jev-powered background bots
+   -------------------------------------------------------------------------- */
+
+export type BotStatus = "running" | "clarifying" | "done" | "failed" | "stopped";
+
+export interface BotStep {
+  action: string;
+  target: string | null;
+  detail: string | null;
+  at: number;
+}
+
+export interface Bot {
+  id: string;
+  goal: string;
+  status: BotStatus;
+  stepCount: number;
+  currentAction: string | null;
+  error: string | null;
+  question: string | null;
+  result: string | null;
+  createdAt: number;
+  completedAt: number | null;
+}
+
+export interface BotDetail extends Bot {
+  steps: BotStep[];
 }
 
 /* --------------------------------------------------------------------------

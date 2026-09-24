@@ -39,10 +39,10 @@ export function Mascot({
   const still = reduced || mood === "paused";
   const asleep = mood === "paused";
 
-  /* How much it bobs, and how quickly. */
+  /* How much it bobs, and how quickly — kept subtle so it reads professional. */
   const bob =
-    mood === "working" ? 3.5 : mood === "unsure" ? 1.5 : mood === "pleased" ? 5 : 2.5;
-  const period = mood === "working" ? 1.9 : mood === "pleased" ? 1.1 : 3.4;
+    mood === "working" ? 1.8 : mood === "unsure" ? 0.8 : mood === "pleased" ? 2.5 : 1.2;
+  const period = mood === "working" ? 2.4 : mood === "pleased" ? 1.6 : 4.0;
 
   const tilt = mood === "unsure" ? -11 : mood === "working" ? 3 : 0;
 
@@ -57,7 +57,7 @@ export function Mascot({
       layoutId={layoutId}
       className={`relative shrink-0 ${className}`}
       style={{ width: px, height: px * 1.06 }}
-      transition={{ type: "spring", stiffness: 120, damping: 18, mass: 0.9 }}
+      transition={{ type: "spring", stiffness: 200, damping: 26, mass: 0.8 }}
     >
       {/* the ground shadow it hovers above */}
       <motion.div
@@ -100,17 +100,17 @@ export function Mascot({
           }}
           animate={
             still
-              ? { opacity: 0.5, boxShadow: "0 0 0 0 var(--primary-glow)" }
+              ? { opacity: 0.5, boxShadow: "0 0 0 0 transparent" }
               : {
-                  opacity: [0.55, 1, 0.55],
+                  opacity: [0.6, 0.85, 0.6],
                   boxShadow: [
-                    "0 0 0 0 var(--primary-glow)",
-                    `0 0 ${px * 0.22}px ${px * 0.05}px var(--primary-glow)`,
-                    "0 0 0 0 var(--primary-glow)",
+                    "0 0 0 0 transparent",
+                    `0 0 ${px * 0.12}px ${px * 0.03}px var(--primary-glow)`,
+                    "0 0 0 0 transparent",
                   ],
                 }
           }
-          transition={{ duration: mood === "working" ? 1.4 : 4, repeat: Infinity, ease: "easeInOut" }}
+          transition={{ duration: mood === "working" ? 2 : 5, repeat: Infinity, ease: "easeInOut" }}
         />
 
         {/* the pebble */}
@@ -185,7 +185,7 @@ export function Mascot({
           className="pointer-events-none absolute inset-0 rounded-[50%]"
           style={{
             boxShadow: "0 0 0 1.5px var(--primary-glow)",
-            animation: "doppel-ring 2.4s var(--ease-calm) infinite",
+            animation: "doppel-ring 3s var(--ease-calm) infinite",
           }}
         />
       )}

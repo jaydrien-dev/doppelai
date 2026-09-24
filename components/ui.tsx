@@ -6,7 +6,7 @@ import type { ComponentProps, ReactNode } from "react";
 type Variant = "primary" | "quiet" | "ghost";
 
 const base =
-  "pressable inline-flex items-center justify-center gap-2 font-medium select-none cursor-pointer disabled:cursor-default";
+  "pressable inline-flex items-center justify-center gap-2 font-medium select-none cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:pointer-events-none";
 
 function variantStyle(variant: Variant): React.CSSProperties {
   switch (variant) {

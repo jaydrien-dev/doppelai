@@ -26,16 +26,23 @@ const DEFAULT_MAX_EDGE = 1366;
 
 let pointerSize = null;
 
-/** The space SetCursorPos works in. Asked once — it doesn't change mid-session. */
+/** The space SetCursorPos / CGEvent works in. Asked once — doesn't change mid-session. */
 async function pointerSpace() {
   if (pointerSize) return pointerSize;
-  const [result] = await win32.act([{ kind: "screen-size" }]);
-  if (result?.ok && result.detail?.width) {
-    pointerSize = { width: result.detail.width, height: result.detail.height };
-  } else {
-    const display = screen.getPrimaryDisplay();
-    pointerSize = { width: display.size.width, height: display.size.height };
+
+  if (process.platform === "win32") {
+    /* Windows: ask the PowerShell driver for GetSystemMetrics values. */
+    const [result] = await win32.act([{ kind: "screen-size" }]);
+    if (result?.ok && result.detail?.width) {
+      pointerSize = { width: result.detail.width, height: result.detail.height };
+      return pointerSize;
+    }
   }
+
+  /* macOS + fallback: Electron's display API. On Retina Macs, pointer space
+     uses logical (CSS) pixels, which is what CGEvent coordinates use too. */
+  const display = screen.getPrimaryDisplay();
+  pointerSize = { width: display.size.width, height: display.size.height };
   return pointerSize;
 }
 

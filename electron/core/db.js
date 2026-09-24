@@ -83,6 +83,8 @@ function emptyState() {
       detail: "thorough",
       /** OpenAI key for Whisper transcription. */
       openaiKey: "",
+      /** TypeSafe key for Jev (System One model — powers computer bots). */
+      typesafeKey: "",
     },
 
     /** The little presence in the corner. */
@@ -241,6 +243,12 @@ function migrateSecrets(s) {
     s.ai.openaiKey = v.encryptSecret(s.ai.openaiKey);
     schedule();
   }
+
+  /* TypeSafe key — starts with "ts_" when plaintext. */
+  if (s.ai.typesafeKey && s.ai.typesafeKey.startsWith("ts_")) {
+    s.ai.typesafeKey = v.encryptSecret(s.ai.typesafeKey);
+    schedule();
+  }
 }
 
 /**
@@ -258,6 +266,15 @@ function apiKey() {
  */
 function openaiKey() {
   const raw = get().ai?.openaiKey ?? "";
+  if (!raw) return "";
+  return getVault().decryptSecret(raw);
+}
+
+/**
+ * Decrypt the TypeSafe API key (Jev).
+ */
+function typesafeKey() {
+  const raw = get().ai?.typesafeKey ?? "";
   if (!raw) return "";
   return getVault().decryptSecret(raw);
 }
@@ -340,6 +357,8 @@ function publicState() {
       hint: key ? `…${key.slice(-6)}` : "",
       openaiConfigured: Boolean(oaiKey || process.env.OPENAI_API_KEY),
       openaiHint: oaiKey ? `…${oaiKey.slice(-6)}` : "",
+      typesafeConfigured: Boolean(typesafeKey() || process.env.TYPESAFE_API_KEY),
+      typesafeHint: typesafeKey() ? `…${typesafeKey().slice(-6)}` : "",
     },
     overlay: s.overlay,
     whisper: s.whisper,
@@ -427,5 +446,6 @@ module.exports = {
   paths,
   apiKey,
   openaiKey,
+  typesafeKey,
   STATE_VERSION,
 };

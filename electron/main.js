@@ -94,6 +94,7 @@ let deskWindow = null;
 let overlayWindow = null;
 let whisperWindow = null;
 let guideWindow = null;
+let taskWindow = null;
 let trayIcon = null;
 let quitting = false;
 
@@ -139,7 +140,7 @@ function createDeskWindow() {
    that has to be reachable without opening anything: start and stop watching.
    -------------------------------------------------------------------------- */
 
-const OVERLAY = { width: 240, height: 200, margin: 18 };
+const OVERLAY = { width: 200, height: 160, margin: 18 };
 
 function overlayHome() {
   const { workArea } = screen.getPrimaryDisplay();
@@ -381,6 +382,86 @@ function unregisterWhisperHotkey() {
 }
 
 /* --------------------------------------------------------------------------
+   Task popup — a small floating panel in the top-right corner.
+
+   Auto-shown when a bot starts running, auto-hidden when all finish.
+   Shows active tasks, step progress, and clarification questions.
+   -------------------------------------------------------------------------- */
+
+const TASK_POPUP = { width: 340, height: 320, margin: 18 };
+
+function taskPopupHome() {
+  const { workArea } = screen.getPrimaryDisplay();
+  return {
+    x: workArea.x + workArea.width - TASK_POPUP.width - TASK_POPUP.margin,
+    y: workArea.y + TASK_POPUP.margin,
+  };
+}
+
+function createTaskWindow() {
+  if (taskWindow && !taskWindow.isDestroyed()) {
+    taskWindow.show();
+    return taskWindow;
+  }
+
+  const home = taskPopupHome();
+
+  taskWindow = new BrowserWindow({
+    ...home,
+    width: TASK_POPUP.width,
+    height: TASK_POPUP.height,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    focusable: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  taskWindow.setAlwaysOnTop(true, "screen-saver");
+  taskWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  taskWindow.once("ready-to-show", () => taskWindow.showInactive());
+  taskWindow.on("closed", () => { taskWindow = null; });
+
+  taskWindow.loadURL(`${baseUrl()}/tasks/`);
+  return taskWindow;
+}
+
+function showTaskPopup() {
+  if (!taskWindow || taskWindow.isDestroyed()) createTaskWindow();
+  else if (!taskWindow.isVisible()) taskWindow.showInactive();
+}
+
+function hideTaskPopup() {
+  if (taskWindow && !taskWindow.isDestroyed() && taskWindow.isVisible()) {
+    taskWindow.hide();
+  }
+}
+
+/**
+ * Called on every bot update. Auto-shows the task popup when a bot
+ * starts running, hides it when all bots are done.
+ */
+function onBotUpdate(bot) {
+  if (bot.status === "running" || bot.status === "clarifying") {
+    showTaskPopup();
+  }
+}
+
+/* --------------------------------------------------------------------------
    System tray icon — always in the taskbar.
 
    Right-click opens a context menu with the same actions as the overlay menu
@@ -505,7 +586,7 @@ app.whenReady().then(() => {
 
   // Doppel's memory comes up before its face does.
   db.init();
-  ipc.register({ showGuideWindow, hideGuideWindow });
+  ipc.register({ showGuideWindow, hideGuideWindow, onBotUpdate });
 
   /* On startup: the overlay is always visible, plus tray icon and whisper.
      The main window opens from the tray or overlay's right-click menu. */
@@ -541,11 +622,22 @@ app.whenReady().then(() => {
 
   /* --------------------------------------------------------- auto-update */
   if (!isDev) {
+    autoUpdater.logger = console;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.checkForUpdatesAndNotify().catch((e) =>
-      console.error("[auto-update] startup check failed:", e?.message ?? e)
-    );
+
+    /* Private GitHub repo needs a token for release asset downloads.
+       Set GH_TOKEN in environment or store it in the app state. */
+    const ghToken = process.env.GH_TOKEN || db.state()?.githubToken;
+    if (ghToken) {
+      autoUpdater.requestHeaders = { Authorization: `token ${ghToken}` };
+    }
+
+    autoUpdater.checkForUpdatesAndNotify().catch((e) => {
+      console.error("[auto-update] startup check failed:", e?.message ?? e);
+      updateStatus = { state: "error", version: null, progress: null, detail: e?.message ?? String(e) };
+      broadcastUpdate();
+    });
   }
 
   app.on("activate", () => {
@@ -607,32 +699,46 @@ function broadcastUpdate() {
 }
 
 autoUpdater.on("checking-for-update", () => {
+  console.log("[auto-update] checking for update…");
   updateStatus = { state: "checking", version: null, progress: null };
+  broadcastUpdate();
 });
 autoUpdater.on("update-available", (info) => {
+  console.log("[auto-update] update available:", info.version);
   updateStatus = { state: "available", version: info.version, progress: null };
   broadcastUpdate();
 });
-autoUpdater.on("update-not-available", () => {
+autoUpdater.on("update-not-available", (info) => {
+  console.log("[auto-update] up to date:", info?.version ?? "unknown");
   updateStatus = { state: "idle", version: null, progress: null };
+  broadcastUpdate();
 });
 autoUpdater.on("download-progress", (prog) => {
   updateStatus = { ...updateStatus, state: "downloading", progress: Math.round(prog.percent) };
   broadcastUpdate();
 });
 autoUpdater.on("update-downloaded", (info) => {
+  console.log("[auto-update] downloaded:", info.version);
   updateStatus = { state: "ready", version: info.version, progress: 100 };
   broadcastUpdate();
 });
 autoUpdater.on("error", (err) => {
   console.error("[auto-update] error:", err?.message ?? err);
-  updateStatus = { state: "idle", version: null, progress: null };
+  updateStatus = { state: "error", version: null, progress: null, detail: err?.message ?? String(err) };
+  broadcastUpdate();
 });
 
 ipcMain.handle("update:status", () => updateStatus);
-ipcMain.handle("update:check", () => autoUpdater.checkForUpdatesAndNotify().catch((e) =>
-  console.error("[auto-update] manual check failed:", e?.message ?? e)
-));
+ipcMain.handle("update:check", async () => {
+  try {
+    return await autoUpdater.checkForUpdatesAndNotify();
+  } catch (e) {
+    console.error("[auto-update] manual check failed:", e?.message ?? e);
+    updateStatus = { state: "error", version: null, progress: null, detail: e?.message ?? String(e) };
+    broadcastUpdate();
+    return { error: e?.message ?? String(e) };
+  }
+});
 ipcMain.handle("update:install", () => autoUpdater.quitAndInstall());
 
 /* --------------------------------------------------------------- overlay -- */
@@ -767,5 +873,44 @@ ipcMain.handle("whisper:setMicSensitivity", (_event, level) => {
 
 ipcMain.handle("whisper:hide", () => {
   if (whisperWindow && !whisperWindow.isDestroyed()) whisperWindow.hide();
+  return true;
+});
+
+/* Whisper chat history — persists the last 5 conversations across sessions */
+ipcMain.handle("whisper:saveChat", (_event, question, answer) => {
+  db.update((s) => {
+    if (!s.whisper.chatHistory) s.whisper.chatHistory = [];
+    s.whisper.chatHistory.push({
+      q: String(question).slice(0, 500),
+      a: String(answer).slice(0, 2000),
+      at: Date.now(),
+    });
+    /* Keep only the last 5 */
+    if (s.whisper.chatHistory.length > 5) {
+      s.whisper.chatHistory = s.whisper.chatHistory.slice(-5);
+    }
+  }, { silent: true });
+  return true;
+});
+
+ipcMain.handle("whisper:chatHistory", () => {
+  return db.get().whisper?.chatHistory ?? [];
+});
+
+/* --------------------------------------------------------- task popup -- */
+
+ipcMain.handle("task:show", () => {
+  showTaskPopup();
+  return true;
+});
+
+ipcMain.handle("task:hide", () => {
+  hideTaskPopup();
+  return true;
+});
+
+ipcMain.handle("task:empty", () => {
+  /* The task popup reports it has nothing to show — hide it */
+  hideTaskPopup();
   return true;
 });

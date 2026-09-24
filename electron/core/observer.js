@@ -3,8 +3,11 @@ const path = require("node:path");
 const { clipboard } = require("electron");
 const crypto = require("node:crypto");
 
+const { execFile } = require("node:child_process");
 const db = require("./db");
 const win32 = require("./win32");
+
+const IS_MAC = process.platform === "darwin";
 
 /**
  * What Doppel actually sees.
@@ -81,6 +84,39 @@ function active() {
 function startWindows() {
   const s = db.get();
   if (!s.permissions.windows) return;
+
+  if (IS_MAC) {
+    /* macOS: poll frontmost app via osascript every 2s */
+    let lastApp = "";
+    let lastTitle = "";
+    const poll = setInterval(() => {
+      if (!active() || !db.get().permissions.windows) return;
+      execFile("osascript", ["-e",
+        'tell application "System Events"\n' +
+        '  set fp to first application process whose frontmost is true\n' +
+        '  set appName to name of fp\n' +
+        '  try\n' +
+        '    set winTitle to name of front window of fp\n' +
+        '  on error\n' +
+        '    set winTitle to ""\n' +
+        '  end try\n' +
+        '  return appName & "||" & winTitle\n' +
+        'end tell',
+      ], { timeout: 3000 }, (err, stdout) => {
+        if (err) return;
+        const parts = stdout.trim().split("||");
+        const app = parts[0] || "";
+        const title = parts[1] || "";
+        if (app && (app !== lastApp || title !== lastTitle)) {
+          lastApp = app;
+          lastTitle = title;
+          record({ kind: "window.focus", app, title });
+        }
+      });
+    }, 2000);
+    stopWindowWatch = () => clearInterval(poll);
+    return;
+  }
 
   stopWindowWatch = win32.watchWindows(
     (w) => {

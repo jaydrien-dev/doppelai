@@ -230,7 +230,7 @@ async function describePdfVision(buffer, pageCount) {
     ],
     thinking: false,
     fast: true,
-    maxTokens: 4000,
+    maxTokens: 2500,
   });
 
   return result.ok ? result.text : null;

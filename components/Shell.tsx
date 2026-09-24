@@ -77,11 +77,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
           ...(desktop && mac ? { paddingTop: 52 } : undefined),
           /* Feature 4: soft edge glow when actively watching */
           borderRight: "1px solid transparent",
-          transition: "border-color 0.6s ease, box-shadow 0.6s ease",
+          transition: "border-color 0.3s ease-out, box-shadow 0.3s ease-out",
           ...(alive
             ? {
-                borderRight: "1px solid var(--primary-glow)",
-                boxShadow: "1px 0 24px -4px var(--primary-glow)",
+                borderRight: "1px solid var(--primary-glow-soft)",
+                boxShadow: "1px 0 12px -4px var(--primary-glow-soft)",
               }
             : {}),
         }}
@@ -245,10 +245,10 @@ function AmbientStatus({ lastSeen, now, paused }: AmbientProps) {
       <AnimatePresence mode="wait">
         <motion.div
           key={lastSeen.at}
-          initial={{ opacity: 0, y: 4 }}
+          initial={{ opacity: 0, y: 3 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.4, ease: "easeOut" }}
+          exit={{ opacity: 0, y: -3 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
         >
           <p
             className="agent-voice"
@@ -424,9 +424,9 @@ function QuickRecall() {
       )}
       {result && !busy && (
         <motion.div
-          initial={{ opacity: 0, y: 4 }}
+          initial={{ opacity: 0, y: 3 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
+          transition={{ duration: 0.15 }}
           className="mt-2"
         >
           <p
@@ -475,10 +475,10 @@ function FlashToast({
     <AnimatePresence>
       {message && (
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 20 }}
-          transition={{ duration: 0.25, ease: [0.22, 0.61, 0.36, 1] }}
+          exit={{ opacity: 0, y: 12 }}
+          transition={{ duration: 0.15, ease: [0.16, 1, 0.3, 1] }}
           style={{
             position: "fixed",
             bottom: 24,
@@ -534,9 +534,9 @@ function UpdateBanner({
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -12 }}
+      initial={{ opacity: 0, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: [0.22, 0.61, 0.36, 1] }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
       style={{
         position: "fixed",
         top: 52,

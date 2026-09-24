@@ -402,7 +402,9 @@ const crypto = require("node:crypto");
  * Doppel identity system.
  */
 
-const oauthClients = new Map();  // clientId → { secret, redirectUris, name }
+/* OAuth clients are persisted in the store so they survive server restarts.
+   Load them into a Map on startup for fast lookups, and write through on changes. */
+const oauthClients = new Map();
 const oauthCodes = new Map();    // code → { clientId, accountId, expiresAt, codeChallenge, codeChallengeMethod }
 
 /** Render a sign-in page for OAuth authorization (when no session exists). */
@@ -447,11 +449,13 @@ routes["POST /oauth/register"] = async (req, res) => {
   const body = await readBody(req);
   const clientId = `client_${crypto.randomBytes(16).toString("hex")}`;
   const clientSecret = crypto.randomBytes(32).toString("hex");
-  oauthClients.set(clientId, {
+  const clientData = {
     secret: clientSecret,
     redirectUris: body.redirect_uris || [],
     name: body.client_name || "MCP Client",
-  });
+  };
+  oauthClients.set(clientId, clientData);
+  store.saveOAuthClient(clientId, clientData);
   return json(res, 201, {
     client_id: clientId,
     client_secret: clientSecret,
@@ -497,7 +501,7 @@ routes["POST /oauth/token"] = async (req, res) => {
   return json(res, 200, {
     access_token: accessToken,
     token_type: "Bearer",
-    expires_in: 86400,
+    expires_in: 90 * 86400,
     scope: "mcp",
   });
 };
@@ -765,6 +769,9 @@ const server = http.createServer(async (req, res) => {
 
 function start() {
   store.init(DATA_DIR);
+  for (const c of store.allOAuthClients()) {
+    oauthClients.set(c.clientId, { secret: c.secret, redirectUris: c.redirectUris, name: c.name });
+  }
   setInterval(() => store.prune(), 60 * 60_000);
 
   /* WebSocket server for relay connections from desktop apps. */

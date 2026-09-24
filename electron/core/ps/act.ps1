@@ -2,6 +2,7 @@
 # Short-lived: Doppel spawns this per step, passing a JSON file of actions.
 #
 #   [{ "kind": "activate", "match": "Excel" },
+#    { "kind": "launch",   "target": "explorer" },
 #    { "kind": "hotkey",   "keys": "^s" },
 #    { "kind": "type",     "text": "hello" },
 #    { "kind": "click",    "x": 400, "y": 300 },
@@ -236,6 +237,37 @@ foreach ($action in $actions) {
         $ms = if ($action.ms) { [int]$action.ms } else { 300 }
         Start-Sleep -Milliseconds $ms
         $entry.detail = "$ms ms"
+      }
+
+      'launch' {
+        $target = [string]$action.target
+        # Try well-known app names → shell verbs / executables
+        $launched = $false
+        switch -Wildcard ($target.ToLower()) {
+          '*explorer*'  { Start-Process explorer.exe; $launched = $true }
+          '*file*'      { Start-Process explorer.exe; $launched = $true }
+          '*notepad*'   { Start-Process notepad.exe;  $launched = $true }
+          '*chrome*'    { Start-Process chrome;        $launched = $true }
+          '*edge*'      { Start-Process msedge;        $launched = $true }
+          '*firefox*'   { Start-Process firefox;       $launched = $true }
+          '*terminal*'  { Start-Process wt.exe;        $launched = $true }
+          '*cmd*'       { Start-Process cmd.exe;       $launched = $true }
+          '*powershell*'{ Start-Process powershell.exe; $launched = $true }
+          '*calc*'      { Start-Process calc.exe;      $launched = $true }
+          '*paint*'     { Start-Process mspaint.exe;   $launched = $true }
+          '*word*'      { Start-Process winword;       $launched = $true }
+          '*excel*'     { Start-Process excel;         $launched = $true }
+          '*outlook*'   { Start-Process outlook;       $launched = $true }
+          '*code*'      { Start-Process code;          $launched = $true }
+          '*cursor*'    { Start-Process cursor;        $launched = $true }
+          default {
+            # Generic: try Start-Process with the raw name
+            Start-Process $target -ErrorAction Stop
+            $launched = $true
+          }
+        }
+        if ($launched) { Start-Sleep -Milliseconds 800 }
+        $entry.detail = $target
       }
 
       'list-windows' {

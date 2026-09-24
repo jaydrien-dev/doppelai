@@ -1,6 +1,6 @@
 {
   "name": "doppel",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "A personal trusted execution engine that learns tasks by watching.",
   "author": "Doppel",
@@ -109,6 +109,7 @@
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "@typesafe-ai/sdk": "^0.6.0",
     "electron-updater": "^6.8.9",
     "framer-motion": "^13.0.0",
     "mammoth": "^1.12.2",

@@ -53,21 +53,11 @@ function shouldRefine(episodeCount) {
 
 /* ------------------------------------------------------------ generation */
 
-const PROFILE_SYSTEM = `You are building a model of a human being from observations of their daily computer use.
+const PROFILE_SYSTEM = `Build a model of this person from observations of their computer use. Extract WHO they are — how they think, communicate, decide, prioritise.
 
-You are given digests (summaries of what they did over hours and days), detected patterns, entities (people, apps, projects they interact with), and recent raw episodes (moment-by-moment observations of their screen).
+Be specific. Not "good communicator" but "writes short direct sentences, favours concrete examples, acknowledges others' points before disagreeing."
 
-From this data, extract a structured profile that captures WHO this person is — not just what they do, but how they think, communicate, decide, and prioritise.
-
-Be specific. "Good communicator" is useless. "Writes in short, direct sentences; favours concrete examples over abstractions; tends to acknowledge others' points before disagreeing" is a profile.
-
-Look for:
-- Communication patterns: sentence length, formality, humour, how they give feedback, how they handle disagreement
-- Decision patterns: do they decide fast or deliberate? Do they seek consensus or move unilaterally? What triggers reconsideration?
-- Priorities: what do they spend the most time on? What do they return to? What do they avoid?
-- Expertise: what domains do they navigate fluently vs. where do they need to look things up?
-- Preferences: tools, workflows, aesthetics, working hours, break patterns
-- The portrait should read like a paragraph a close colleague would write about them — specific, honest, warm`;
+Extract: communication patterns (tone, formality, feedback style), decision patterns (fast vs deliberate, consensus vs unilateral), priorities (time spent, what they return to), expertise (fluent domains vs lookup domains), preferences (tools, workflows, hours). Portrait: one paragraph a close colleague would write.`;
 
 const PROFILE_SCHEMA = {
   type: "object",
@@ -197,7 +187,7 @@ async function generateProfile() {
   const result = await claude.ask({
     system,
     effort: claude.EFFORT.consolidate,
-    maxTokens: 2000,
+    maxTokens: 1200,
     schema: PROFILE_SCHEMA,
     messages: [{ role: "user", content: userContent }],
   });

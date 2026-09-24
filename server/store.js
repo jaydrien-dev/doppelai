@@ -31,6 +31,7 @@ const empty = () => ({
   sessions: [],
   links: [],
   oauthTokens: [],
+  oauthClients: [],
 });
 
 function init(dir) {
@@ -287,7 +288,7 @@ function deleteAccount(accountId) {
 
 /* -------------------------------------------------------------- OAuth tokens */
 
-const OAUTH_TOKEN_LIFE = 24 * 60 * 60_000; // 24 hours
+const OAUTH_TOKEN_LIFE = 90 * 24 * 60 * 60_000; // 90 days — MCP connectors should stay connected
 
 function createOAuthToken(tokenHash, clientId, accountId) {
   const entry = {
@@ -307,6 +308,30 @@ function findOAuthToken(tokenHash) {
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) return null;
   return entry;
+}
+
+/* -------------------------------------------------------- OAuth clients -- */
+
+function saveOAuthClient(clientId, clientData) {
+  if (!data.oauthClients) data.oauthClients = [];
+  const existing = data.oauthClients.findIndex((c) => c.clientId === clientId);
+  const entry = { clientId, ...clientData, savedAt: Date.now() };
+  if (existing >= 0) {
+    data.oauthClients[existing] = entry;
+  } else {
+    data.oauthClients.push(entry);
+  }
+  save();
+  return entry;
+}
+
+function findOAuthClient(clientId) {
+  if (!data.oauthClients) return null;
+  return data.oauthClients.find((c) => c.clientId === clientId) ?? null;
+}
+
+function allOAuthClients() {
+  return data.oauthClients ?? [];
 }
 
 /* --------------------------------------------------------------------------- */
@@ -342,6 +367,9 @@ module.exports = {
   normaliseEmail,
   createOAuthToken,
   findOAuthToken,
+  saveOAuthClient,
+  findOAuthClient,
+  allOAuthClients,
   digest,
   SESSION_LIFE,
   LINK_LIFE,

@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { doppel, useDoppel } from "@/lib/store";
 import { Mascot } from "@/components/Mascot";
 import { Button, SectionHeading } from "@/components/ui";
-import type { BillingStatus, PlanInfo, TokenPack } from "@/lib/types";
+import type { BillingStatus, PlanInfo, TokenPack, TokenEvent } from "@/lib/types";
 
 const ACTION_LABELS: Record<string, string> = {
   "vision:look": "Vision look",
@@ -18,13 +19,28 @@ const ACTION_LABELS: Record<string, string> = {
   "nudge:evaluate": "Nudge evaluation",
 };
 
+const PRO_FEATURES = [
+  "Unlimited tokens",
+  "Unlimited agent connectors",
+  "Workflow orchestration",
+  "Brain export / import",
+  "User profile & respond-as-you",
+  "Document ingestion",
+  "Nudge system",
+  "Guided walkthroughs",
+  "MCP server for external agents",
+];
+
 export default function BillingPage() {
   const billing = useDoppel((s) => s.billing);
   const account = useDoppel((s) => s.account);
+  const usage = useDoppel((s) => s.usage);
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [costs, setCosts] = useState<Record<string, number>>({});
   const [packs, setPacks] = useState<TokenPack[]>([]);
+  const [history, setHistory] = useState<TokenEvent[]>([]);
+  const [features, setFeatures] = useState<Record<string, { unlocked: boolean; requiredPlan: string }>>({});
   const [busy, setBusy] = useState(false);
   const [pendingSession, setPendingSession] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -34,6 +50,8 @@ export default function BillingPage() {
     doppel.billingPlans().then(setPlans);
     doppel.billingCosts().then(setCosts);
     doppel.billingTokenPacks().then(setPacks);
+    doppel.billingHistory(20).then(setHistory);
+    doppel.gatesFeatures().then(setFeatures);
   }, [billing.plan, billing.dailyUsed, billing.tokenBalance]);
 
   const checkout = async (priceId: string) => {
@@ -81,6 +99,17 @@ export default function BillingPage() {
     ? Math.min(100, Math.round((status.dailyUsed / status.dailyLimit) * 100))
     : 0;
 
+  /* Usage breakdown from API calls this month */
+  const monthCalls = usage?.current?.calls ?? 0;
+  const monthInput = usage?.current?.inputTokens ?? 0;
+  const monthOutput = usage?.current?.outputTokens ?? 0;
+
+  /* Action breakdown from recent history */
+  const actionCounts: Record<string, number> = {};
+  for (const ev of history) {
+    actionCounts[ev.action] = (actionCounts[ev.action] ?? 0) + 1;
+  }
+
   return (
     <div className="max-w-[720px]">
       <header className="mb-12 flex items-start gap-6">
@@ -115,7 +144,7 @@ export default function BillingPage() {
             </div>
             <div style={{ textAlign: "right" }}>
               <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
-                {status.totalSpent}
+                {status.totalSpent.toLocaleString()}
               </p>
               <p style={{ fontSize: "var(--text-micro)", color: "var(--slate)" }}>
                 tokens used all time
@@ -151,6 +180,43 @@ export default function BillingPage() {
             </div>
           )}
         </div>
+      </section>
+
+      {/* -------------------------------------------------- usage metering */}
+      <section className="mb-12">
+        <SectionHeading>This month</SectionHeading>
+
+        <div className="flex flex-wrap gap-3">
+          <div className="raised flex-1" style={{ padding: "18px 22px", minWidth: 130, textAlign: "center" }}>
+            <p style={{ fontSize: "var(--text-display)", fontWeight: 700 }}>{monthCalls}</p>
+            <p style={{ fontSize: "var(--text-micro)", color: "var(--slate)", marginTop: 2 }}>AI calls</p>
+          </div>
+          <div className="raised flex-1" style={{ padding: "18px 22px", minWidth: 130, textAlign: "center" }}>
+            <p style={{ fontSize: "var(--text-display)", fontWeight: 700 }}>{(monthInput / 1000).toFixed(1)}k</p>
+            <p style={{ fontSize: "var(--text-micro)", color: "var(--slate)", marginTop: 2 }}>input tokens</p>
+          </div>
+          <div className="raised flex-1" style={{ padding: "18px 22px", minWidth: 130, textAlign: "center" }}>
+            <p style={{ fontSize: "var(--text-display)", fontWeight: 700 }}>{(monthOutput / 1000).toFixed(1)}k</p>
+            <p style={{ fontSize: "var(--text-micro)", color: "var(--slate)", marginTop: 2 }}>output tokens</p>
+          </div>
+        </div>
+
+        {/* Action breakdown */}
+        {Object.keys(actionCounts).length > 0 && (
+          <div className="raised mt-3" style={{ padding: 18 }}>
+            <p className="micro-label mb-2">Recent activity breakdown</p>
+            <div className="flex flex-col gap-1">
+              {Object.entries(actionCounts)
+                .sort(([, a], [, b]) => b - a)
+                .map(([action, count]) => (
+                  <div key={action} className="flex items-center justify-between" style={{ fontSize: "var(--text-sm)" }}>
+                    <span>{ACTION_LABELS[action] ?? action}</span>
+                    <span style={{ color: "var(--slate)" }}>{count}x</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* -------------------------------------------------------- notification */}
@@ -207,10 +273,46 @@ export default function BillingPage() {
                   {busy ? "Opening..." : `Upgrade to ${pro.name}`}
                 </Button>
               </div>
+
+              {/* Pro feature list */}
+              <div className="mt-4" style={{ columns: 2, gap: 16 }}>
+                {PRO_FEATURES.map((f) => (
+                  <p key={f} style={{ fontSize: "var(--text-sm)", color: "var(--slate)", marginBottom: 4, breakInside: "avoid" }}>
+                    <span style={{ color: "var(--primary)", marginRight: 6 }}>+</span>{f}
+                  </p>
+                ))}
+              </div>
             </div>
           </section>
         );
       })()}
+
+      {/* ------------------------------------------- feature availability */}
+      {Object.keys(features).length > 0 && status.plan !== "pro" && (
+        <section className="mb-12">
+          <SectionHeading>Feature access</SectionHeading>
+          <div className="raised" style={{ padding: 22 }}>
+            <div className="flex flex-col gap-2">
+              {Object.entries(features)
+                .filter(([k]) => !k.startsWith("_"))
+                .map(([feature, info]) => (
+                  <div
+                    key={feature}
+                    className="flex items-center justify-between"
+                    style={{ fontSize: "var(--text-sm)" }}
+                  >
+                    <span style={{ opacity: info.unlocked ? 1 : 0.5 }}>
+                      {ACTION_LABELS[feature] ?? feature.replace(/[_:]/g, " ")}
+                    </span>
+                    <span style={{ color: info.unlocked ? "var(--green, #22c55e)" : "var(--slate)", fontSize: "var(--text-micro)" }}>
+                      {info.unlocked ? "unlocked" : "Pro"}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* -------------------------------------------------------- token packs */}
       {status.plan !== "pro" && (
@@ -285,6 +387,14 @@ export default function BillingPage() {
           </div>
         </section>
       )}
+
+      {/* --------------------------------------------------- legal */}
+      <section className="mb-12">
+        <div className="flex gap-4" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+          <Link href="/terms" style={{ color: "var(--slate)", textDecoration: "underline" }}>Terms of Service</Link>
+          <Link href="/privacy" style={{ color: "var(--slate)", textDecoration: "underline" }}>Privacy Policy</Link>
+        </div>
+      </section>
 
     </div>
   );

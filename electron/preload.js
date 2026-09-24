@@ -15,8 +15,15 @@ contextBridge.exposeInMainWorld("doppel", {
   overlayMenu: () => invoke("overlay:menu"),
   overlayToggleWatch: () => invoke("overlay:toggleWatch"),
   overlayToggleWhisper: () => invoke("overlay:toggleWhisper"),
+  overlayShowTasks: () => invoke("task:show"),
   overlaySetEnabled: (on) => invoke("overlay:setEnabled", on),
+  overlaySetBarHeight: (h) => invoke("overlay:setBarHeight", h),
   overlayHome: () => invoke("overlay:home"),
+  onOverlayMode: (fn) => {
+    const handler = (_e, mode) => fn(mode);
+    ipcRenderer.on("doppel:overlay-mode", handler);
+    return () => ipcRenderer.removeListener("doppel:overlay-mode", handler);
+  },
 
   /* live state */
   getState: () => invoke("state:get"),
@@ -51,8 +58,13 @@ contextBridge.exposeInMainWorld("doppel", {
   clearApiKey: () => invoke("ai:clearKey"),
   setOpenAIKey: (key) => invoke("ai:setOpenAIKey", key),
   clearOpenAIKey: () => invoke("ai:clearOpenAIKey"),
+  setTypeSafeKey: (key) => invoke("ai:setTypeSafeKey", key),
+  clearTypeSafeKey: () => invoke("ai:clearTypeSafeKey"),
   transcribeAudio: (buffer, prompt) => invoke("whisper:transcribe", buffer, prompt),
   whisperAsk: (buffer, history) => invoke("whisper:ask", buffer, history),
+  classifyIntent: (text) => invoke("ai:classifyIntent", text),
+  routeVoice: (text) => invoke("ai:routeVoice", text),
+  isHallucination: (text) => invoke("ai:isHallucination", text),
   setAutoWatch: (on) => invoke("ai:setAutoWatch", on),
   setDetail: (level) => invoke("ai:setDetail", level),
   lookNow: () => invoke("vision:look"),
@@ -110,6 +122,8 @@ contextBridge.exposeInMainWorld("doppel", {
   whisperSetAutoDismiss: (sec) => invoke("whisper:setAutoDismiss", sec),
   whisperHide: () => invoke("whisper:hide"),
   whisperSetMicSensitivity: (level) => invoke("whisper:setMicSensitivity", level),
+  whisperSaveChat: (question, answer) => invoke("whisper:saveChat", question, answer),
+  whisperChatHistory: () => invoke("whisper:chatHistory"),
 
   /* add-ons */
   listAddons: () => invoke("addons:list"),
@@ -201,6 +215,26 @@ contextBridge.exposeInMainWorld("doppel", {
     ipcRenderer.on("guide:instruction", handler);
     return () => ipcRenderer.removeListener("guide:instruction", handler);
   },
+
+  /* task popup */
+  taskPopupEmpty: () => invoke("task:empty"),
+
+  /* computer bots */
+  computerCreate: (goal) => invoke("computer:create", goal),
+  computerRespond: (id, answer) => invoke("computer:respond", id, answer),
+  computerStop: (id) => invoke("computer:stop", id),
+  computerList: () => invoke("computer:list"),
+  computerStatus: (id) => invoke("computer:status", id),
+  computerClear: (id) => invoke("computer:clear", id),
+  computerConfigured: () => invoke("computer:configured"),
+  onBotUpdate: (fn) => {
+    const handler = (_e, bot) => fn(bot);
+    ipcRenderer.on("doppel:bot-update", handler);
+    return () => ipcRenderer.removeListener("doppel:bot-update", handler);
+  },
+
+  /* license gates */
+  gatesFeatures: () => invoke("gates:features"),
 
   /* billing */
   billingStatus: () => invoke("billing:status"),

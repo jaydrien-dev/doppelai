@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { doppel, useDoppel } from "@/lib/store";
-import type { InboxTask, Workflow } from "@/lib/store";
+import type { InboxTask, Workflow, Bot } from "@/lib/store";
 import type { WorkflowStep } from "@/lib/types";
 import { ago } from "@/lib/time";
 import { SectionHeading, Button } from "@/components/ui";
@@ -249,6 +249,7 @@ export default function AgentsPage() {
             exit={{ opacity: 0, x: 20 }}
             transition={{ duration: 0.2, ease: [0.22, 0.61, 0.36, 1] }}
           >
+            <BotSection />
             <WorkflowSection workflows={workflows} now={now} />
             <AgentList
               agents={AGENTS}
@@ -1029,6 +1030,250 @@ function WorkflowCard({ workflow: wf, now }: { workflow: Workflow; now: number }
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   Bot Section — Jev-powered background agents
+   ========================================================================= */
+
+const BOT_STATUS_COLORS: Record<string, string> = {
+  running: "#e89b00",
+  clarifying: "var(--primary)",
+  done: "#22c55e",
+  failed: "#ef4444",
+  stopped: "var(--slate)",
+};
+
+function BotSection() {
+  const [bots, setBots] = useState<Bot[]>([]);
+  const [goal, setGoal] = useState("");
+  const [config, setConfig] = useState<{ configured: boolean; geminiKey: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    doppel.computerConfigured().then(setConfig);
+    doppel.computerList().then(setBots);
+    const unsub = doppel.onBotUpdate((bot: Bot) => {
+      setBots((prev) => {
+        const idx = prev.findIndex((b) => b.id === bot.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = bot;
+          return next;
+        }
+        return [bot, ...prev];
+      });
+    });
+    return () => { unsub?.(); };
+  }, []);
+
+  const launch = async () => {
+    const g = goal.trim();
+    if (!g || busy) return;
+    setBusy(true);
+    setError(null);
+    const result = await doppel.computerCreate(g);
+    setBusy(false);
+    if (result.ok) {
+      setGoal("");
+    } else {
+      setError(result.error === "upgrade_required" ? "Upgrade to Pro to use bots." : result.error ?? "Something went wrong.");
+    }
+  };
+
+  const activeBots = bots.filter((b) => b.status === "running");
+  const pastBots = bots.filter((b) => b.status !== "running");
+
+  return (
+    <section className="mb-12">
+      <SectionHeading>Doppel Computer</SectionHeading>
+      <p className="mb-4" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+        Send bots to do your bidding. Runs in the background.
+      </p>
+
+      {/* Launch input */}
+      <div className="raised mb-4" style={{ padding: "16px 20px" }}>
+        <div className="flex items-center gap-3">
+          <input
+            type="text"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") launch(); }}
+            placeholder="What should the bot do?"
+            spellCheck={false}
+            style={{
+              flex: 1,
+              padding: "10px 14px",
+              borderRadius: "var(--radius-control)",
+              background: "var(--bg-base)",
+              boxShadow: "var(--elev-pressed-sm)",
+              fontSize: "var(--text-sm)",
+              color: "var(--ink)",
+              border: "none",
+              outline: "none",
+            }}
+          />
+          <Button
+            variant="primary"
+            onClick={launch}
+            disabled={busy || !goal.trim() || !config?.configured}
+          >
+            {busy ? "Launching..." : "Launch"}
+          </Button>
+        </div>
+
+        {config && !config.configured && (
+          <p className="mt-3" style={{ fontSize: "var(--text-xs, 11px)", color: "#ef4444" }}>
+            Add your Gemini API key in Settings to enable bots.
+          </p>
+        )}
+        {error && (
+          <p className="mt-3" style={{ fontSize: "var(--text-xs, 11px)", color: "#ef4444" }}>
+            {error}
+          </p>
+        )}
+      </div>
+
+      {/* Active bots */}
+      {activeBots.length > 0 && (
+        <div className="flex flex-col gap-2 mb-4">
+          {activeBots.map((bot) => (
+            <BotCard key={bot.id} bot={bot} />
+          ))}
+        </div>
+      )}
+
+      {/* Past bots */}
+      {pastBots.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {pastBots.slice(0, 10).map((bot) => (
+            <BotCard key={bot.id} bot={bot} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BotCard({ bot }: { bot: Bot }) {
+  const isActive = bot.status === "running" || bot.status === "clarifying";
+  const color = BOT_STATUS_COLORS[bot.status] ?? "var(--slate)";
+  const [reply, setReply] = useState("");
+
+  const sendReply = () => {
+    if (!reply.trim()) return;
+    doppel.computerRespond(bot.id, reply.trim());
+    setReply("");
+  };
+
+  return (
+    <div
+      className="raised"
+      style={{
+        padding: "14px 18px",
+        borderLeft: `3px solid ${color}`,
+      }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className="block shrink-0 rounded-full"
+              style={{
+                width: 7, height: 7,
+                background: color,
+                boxShadow: isActive ? `0 0 6px ${color}` : "none",
+              }}
+            />
+            <p style={{ fontSize: "var(--text-sm)", fontWeight: 600 }} className="truncate">
+              {bot.goal}
+            </p>
+          </div>
+          <p style={{ fontSize: "var(--text-xs, 11px)", color: "var(--slate)", marginTop: 3 }}>
+            {bot.status === "clarifying"
+              ? "Waiting for your answer..."
+              : bot.status === "running" && bot.currentAction
+                ? `Step ${bot.stepCount}: ${bot.currentAction}`
+                : bot.status === "done"
+                  ? `Completed in ${bot.stepCount} steps`
+                  : bot.status === "failed"
+                    ? bot.error ?? "Failed"
+                    : bot.status === "stopped"
+                      ? `Stopped after ${bot.stepCount} steps`
+                      : bot.status}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {isActive && (
+            <button
+              onClick={() => doppel.computerStop(bot.id)}
+              style={{
+                fontSize: "var(--text-xs, 11px)",
+                color: "#e55",
+                border: "1px solid #e55",
+                borderRadius: 6,
+                padding: "3px 8px",
+                background: "transparent",
+                cursor: "pointer",
+              }}
+            >
+              Stop
+            </button>
+          )}
+          {!isActive && (
+            <button
+              onClick={() => doppel.computerClear(bot.id)}
+              style={{
+                fontSize: "var(--text-xs, 11px)",
+                color: "var(--slate)",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                opacity: 0.6,
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Clarification question */}
+      {bot.status === "clarifying" && bot.question && (
+        <div className="mt-3">
+          <p className="agent-voice" style={{ fontSize: "var(--text-sm)", color: "var(--ink)", marginBottom: 8 }}>
+            {bot.question}
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") sendReply(); }}
+              placeholder="Your answer..."
+              spellCheck={false}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: "var(--radius-control)",
+                background: "var(--bg-base)",
+                boxShadow: "var(--elev-pressed-sm)",
+                fontSize: "var(--text-sm)",
+                color: "var(--ink)",
+                border: "none",
+                outline: "none",
+              }}
+            />
+            <Button variant="primary" size="sm" onClick={sendReply} disabled={!reply.trim()}>
+              Reply
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

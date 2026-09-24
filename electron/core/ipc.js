@@ -18,8 +18,11 @@ const screen = require("./screen");
 const browser = require("./browser");
 const ingest = require("./ingest");
 const tokens = require("./tokens");
+const gates = require("./gates");
 const guide = require("./guide");
 const profile = require("./profile");
+const computer = require("./computer");
+const jev = require("./jev");
 
 /**
  * Everything the interface can ask for. The renderer holds no truth of its
@@ -348,6 +351,23 @@ function register(opts = {}) {
     }),
   );
 
+  handle("ai:setTypeSafeKey", (key) => {
+    const trimmed = String(key ?? "").trim();
+    if (!trimmed) return { ok: false, detail: "That's empty." };
+    db.update((s) => {
+      s.ai.typesafeKey = vault.encryptSecret(trimmed);
+    });
+    computer.resetClient();
+    return { ok: true };
+  });
+
+  handle("ai:clearTypeSafeKey", () => {
+    db.update((s) => {
+      s.ai.typesafeKey = "";
+    });
+    computer.resetClient();
+  });
+
   /* --- whisper transcription ------------------------------------------- */
 
   ipcMain.handle("whisper:transcribe", async (_e, audioBuffer, prompt) => {
@@ -455,12 +475,12 @@ function register(opts = {}) {
       /* ---- Walkthrough detection — absolute first gate.
          If the user wants a walkthrough / tutorial / to be pointed at a UI
          element, return immediately so the renderer routes to the guide. */
-      if (isWalkthroughRequest(transcript)) {
+      if (await isWalkthroughRequest(transcript)) {
         return { ok: true, transcript, isWalkthrough: true };
       }
 
       /* Everything left — answer from memory (or screen if they asked). */
-      const screenQ = isScreenQuestion(transcript) && db.get().permissions.screen && claude.configured();
+      const screenQ = await isScreenQuestion(transcript) && db.get().permissions.screen && claude.configured();
       let result;
       if (screenQ) {
         result = await lookAndAnswer(transcript, { fast: true, history: history ?? [] });
@@ -507,59 +527,22 @@ function register(opts = {}) {
    * my screen", "what am I looking at", etc., take a fresh look FIRST and
    * fold the observation into the answer context.
    */
-  const SCREEN_PATTERNS = [
-    /\bwhat.*(on|at).*(my|the)?\s*screen\b/i,
-    /\bwhat.*(am i|i'm).*(look|see|do|work)/i,
-    /\bwhat.*(is|are)\s+this\b/i,
-    /\bwhat.*(see|seeing|show)\b.*right now/i,
-    /\blook at.*(my|the)?\s*screen\b/i,
-    /\bread.*(my|the)?\s*screen\b/i,
-    /\btell me what.*(see|screen|open)\b/i,
-    /\bscreen\s*right\s*now\b/i,
-    /\bcurrently\s+(on|open|showing|visible)\b/i,
-    /\b(describe|explain)\s+.*(screen|window|page)\b/i,
-  ];
-
-  function isScreenQuestion(text) {
-    return SCREEN_PATTERNS.some((re) => re.test(text));
+  async function isScreenQuestion(text) {
+    const score = await jev.score(
+      { userMessage: text },
+      "The user is asking about what is currently visible on their screen, monitor, or display — they want something described, explained, read, or interpreted from what they see right now",
+      0.3,
+    );
+    return score > 0.6;
   }
 
-  /* ---- Walkthrough detection — mirrors the renderer-side list exactly.
-     Every conceivable way to ask for a tutorial, walkthrough, or to be
-     pointed at a UI element. */
-  const WALKTHROUGH_PATTERNS = [
-    /\bwalk\s+(me\s+)?through\b/i,
-    /\bwalk\s+through\s+(how|the|this|that|it|my|your|setting|process|steps)\b/i,
-    /\bguide\s+(me\s+)?(through|on|to|in|for|with)\b/i,
-    /\btake\s+me\s+through\b/i,
-    /\bshow\s+me\s+how\s+(to|i|we|you|it|the|this|that)\b/i,
-    /\bshow\s+me\s+how\b/i,
-    /\bteach\s+me\b/i,
-    /\bdemonstrate\s+(how\s+to\s+|the\s+|this|that|it)?\b/i,
-    /\b(walkthrough|walk-through|tutorial|guided\s*tour)\s+(of|for|on|about|to)\b/i,
-    /\b(give|show|start|begin|do|run|provide|create)\s+(me\s+)?(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration)\b/i,
-    /\b(i\s+(want|need|would\s+like)\s+(a\s+)?(walkthrough|walk-through|tutorial|guided\s*tour|demo|demonstration))\b/i,
-    /\bstep[\s-]*by[\s-]*step\b/i,
-    /\bshow\s+me\s+where\b/i,
-    /\bpoint\s+(me\s+)?(to|at|where|toward|towards)\b/i,
-    /\bwhere\s+(do|should|can|would|could|shall)\s+i\s+(click|tap|press|find|go|look|navigate|select|start|begin)\b/i,
-    /\bwhere\s+(is|are|was)\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|tab|link|icon|toggle|switch|field|input|checkbox|dropdown|slider|control|panel|section|page|area|tool|toolbar|sidebar|dialog|popup|modal|window|pane)\b/i,
-    /\bwhich\s+(button|menu|tab|option|setting|icon|link|control)\s+(do|should|to|would|could)\b/i,
-    /\b(what|where)\s+(do|should|would|could)\s+i\s+(click|press|tap|select|choose|pick|hit)\b/i,
-    /\bhelp\s+me\s+find\s+(the\s+)?(\w+\s+){0,5}(button|setting|option|menu|control|toggle|icon|link|field|tab)\b/i,
-    /\bfind\s+(the\s+)?(button|setting|option|menu|control|toggle)\s+(for|to)\b/i,
-    /\bhelp\s+me\s+(learn|figure\s+out|understand)\s+how\s+to\b/i,
-    /\bhow\s+(do|can|should|would)\s+i\s+(click|navigate|find|get to|access|open|enable|disable|toggle|turn on|turn off|activate|deactivate|set up|configure|change|modify|adjust|switch)\b/i,
-    /\bshow\s+me\s+the\s+way\s+to\b/i,
-    /\blead\s+me\s+(through|to)\b/i,
-    /\b(show|point\s+out)\s+me\s+(the\s+)?(steps|process|procedure|way|path|workflow|flow)\b/i,
-    /\bwok\s+me\s+through\b/i,
-    /\bguard\s+me\s+through\b/i,
-    /\bwalked?\s+me\s+through\b/i,
-  ];
-
-  function isWalkthroughRequest(text) {
-    return WALKTHROUGH_PATTERNS.some((re) => re.test(text));
+  async function isWalkthroughRequest(text) {
+    const score = await jev.score(
+      { userMessage: text },
+      "The user wants a step-by-step walkthrough, tutorial, guided tour, or to be shown where a specific button/setting/UI element is located",
+      0.2,
+    );
+    return score > 0.6;
   }
 
   /**
@@ -882,6 +865,16 @@ function register(opts = {}) {
         const charging = bat.BatteryStatus === 2 ? " (charging)" : "";
         return `Battery: ${pct}%${charging}`;
       }
+      if (process.platform === "darwin") {
+        const raw = execSync("pmset -g batt", { encoding: "utf8", timeout: 3000 });
+        const match = raw.match(/(\d+)%;\s*(charging|discharging|charged|finishing charge)/i);
+        if (match) {
+          const pct = match[1];
+          const state = match[2].toLowerCase().includes("charg") && !match[2].toLowerCase().includes("discharg") ? " (charging)" : "";
+          return `Battery: ${pct}%${state}`;
+        }
+        return `Battery: ${raw.trim()}`;
+      }
     } catch { /* fall through */ }
     return "Battery info unavailable (desktop or unsupported).";
   }
@@ -945,63 +938,23 @@ function register(opts = {}) {
    * errors, concepts — things the web can answer.  Returns false for personal
    * questions that only memory could answer.
    */
-  function needsWebSearch(question, memoryHits) {
+  async function needsWebSearch(question, memoryHits) {
     if (memoryHits >= 3) return false;
-    const q = question.toLowerCase();
-
-    /* Personal / memory questions — only memory can answer these. */
-    if (/\b(i|my|me|we|our)\b.*(yesterday|last week|earlier|today|this morning|before|previously|last time)/i.test(q)) return false;
-    if (/\bwhat (was|were|did|have) (i|we)\b/i.test(q)) return false;
-    if (/\bdo you remember\b/i.test(q)) return false;
-    if (/\b(my|our) (file|project|code|document|folder|schedule|meeting|task|routine)\b/i.test(q)) return false;
-
-    /* Knowledge / factual / how-to — web search will help. */
-    const webPatterns = [
-      /\b(what is|what are|what does|what's|whats)\b/i,
-      /\b(how (do|to|does|can|should|would))\b/i,
-      /\b(explain|define|meaning of|definition|describe)\b/i,
-      /\b(why (is|are|does|do|did|can|would|should))\b/i,
-      /\b(difference between|compare|vs\.?|versus)\b/i,
-      /\b(formula|equation|syntax|shortcut|command|function)\b/i,
-      /\b(error|exception|bug|crash|fail|broken|not working|issue)\b/i,
-      /\b(best (way|practice|approach|method)|recommended)\b/i,
-      /\b(latest|recent|current|new|update|news|2026|2025)\b/i,
-      /\b(convert|calculate|translate)\b/i,
-      /\b(find|search|look up|lookup|google)\b/i,
-      /\b(tutorial|guide|documentation|docs|example|resource)\b/i,
-      /\b(install|setup|set up|configure|download)\b/i,
-      /\b(who (is|are|was|were|wrote|created|invented|founded))\b/i,
-      /\b(when (is|was|did|does|will))\b/i,
-      /\b(where (is|are|can|do))\b/i,
-      /\b(requirements? for|prerequisites?|qualifications?)\b/i,
-      /\b(price|pricing|cost|free|paid|subscription)\b/i,
-      /\b(summary|summarize|overview|recap)\b/i,
-      /\b(citation|cite|reference|bibliography|apa|mla)\b/i,
-      /\b(recipe|ingredients|how .* make|how .* cook)\b/i,
-      /\b(weather|forecast|temperature|rain)\b/i,
-      /\b(stock|market|crypto|bitcoin|ethereum)\b/i,
-      /\b(score|game|match|standings|league)\b/i,
-      /\b(movie|film|show|series|cast|director|actor|actress)\b/i,
-      /\b(song|album|artist|band|music|lyrics)\b/i,
-      /\b(country|capital|population|language|currency)\b/i,
-      /\b(university|college|school|program|degree|admission)\b/i,
-      /\b(law|legal|regulation|statute|act|rights)\b/i,
-      /\b(health|symptom|medication|medicine|treatment|disease)\b/i,
-      /\b(api|sdk|library|framework|package|module|npm|pip)\b/i,
-      /\b(alternative|replacement|substitute|instead of)\b/i,
-      /\b(review|rating|opinion|worth it|should i)\b/i,
-    ];
-    if (webPatterns.some((re) => re.test(q))) return true;
-
-    /* If memory has zero hits, try web as a last resort. */
-    if (memoryHits === 0) return true;
-    return false;
+    const source = await jev.decide(
+      { question, memoryHits },
+      "Where should this question be answered from?",
+      {
+        memory: "Personal question about the user's own life, habits, files, schedule, past activity — only their memory can answer this",
+        web:    "General knowledge, factual, how-to, current events, definitions, technical docs — the web has the answer",
+        files:  "The user is looking for a specific file, document, or folder on their computer",
+      },
+      memoryHits === 0 ? "web" : "memory",
+    );
+    return source === "web" || source === "files";
   }
 
-  /**
-   * Returns true for "where's my file?" style questions.
-   */
   function isFileSearchQuestion(question) {
+    /* Kept as sync fallback — Jev handles this via needsWebSearch "files" route */
     return /\b(where('?s| is| are| did)|find|locate|search for)\b.*\b(file|document|folder|presentation|spreadsheet|pdf|resume|report|essay|paper|photo|image|video|download)\b/i.test(question)
       || /\b(file|document|folder)\b.*\b(where|find|locate|search)\b/i.test(question);
   }
@@ -1049,7 +1002,7 @@ function register(opts = {}) {
 
     /* 3. Web search — if memory is thin and question is searchable. */
     let webContext = null;
-    if (needsWebSearch(q, memHits)) {
+    if (await needsWebSearch(q, memHits)) {
       broadcast("doppel:thinking-stream", "Searching the web...\n");
       webContext = await quickWebSearch(q);
     }
@@ -1101,7 +1054,7 @@ function register(opts = {}) {
     /* If the question is about an error, concept, or how-to, web search
        adds massive value on top of the screen context. */
     let webBlock = "";
-    if (needsWebSearch(question, found)) {
+    if (await needsWebSearch(question, found)) {
       broadcast("doppel:thinking-stream", "Looking at your screen and searching the web...\n");
       const web = await quickWebSearch(question);
       if (web) webBlock = `\n\nWeb search results:\n${web}`;
@@ -1122,8 +1075,8 @@ function register(opts = {}) {
     ];
 
     const result = await claude.streamAsk({
-      system: `You are Doppel — a personal agent on this person's computer. You can see their screen right now. Answer their question about what's on screen directly and conversationally. Be specific — quote text, name apps, describe what you see. If web search results are provided, use them to give accurate answers — especially for errors, how-tos, and concepts. First person, short sentences, no emoji.`,
-      maxTokens: 2048,
+      system: `You are Doppel — you can see their screen right now. Answer directly: quote text, name apps, describe what you see. Use web results if provided. First person, short sentences, no emoji.`,
+      maxTokens: 1200,
       fast: false,
       thinking: true,
       onText: (delta) => broadcast("doppel:answer-stream", delta),
@@ -1158,7 +1111,7 @@ function register(opts = {}) {
     if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     try {
       const q = String(question ?? "");
-      if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
+      if (await isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
         const r = await lookAndAnswer(q, { history: history ?? [] });
         tokens.spend("brain:ask");
         return r;
@@ -1177,7 +1130,7 @@ function register(opts = {}) {
     if (!gate.allowed) return { ok: false, reason: "token_limit", ...gate };
     try {
       const q = String(question ?? "");
-      if (isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
+      if (await isScreenQuestion(q) && db.get().permissions.screen && claude.configured()) {
         const r = await lookAndAnswer(q, { fast: true, history: history ?? [] });
         tokens.spend("brain:ask-fast");
         return r;
@@ -1221,7 +1174,11 @@ function register(opts = {}) {
     return brief ? { ok: true, brief } : { ok: false };
   });
 
+  ipcMain.handle("gates:features", () => gates.featureSummary());
+
   ipcMain.handle("brain:export", async () => {
+    const gate = gates.check("brain:export");
+    if (!gate.allowed) return { ok: false, ...gate };
     try {
       const data = brain.exportBrain();
       const result = await dialog.showSaveDialog({
@@ -1241,6 +1198,8 @@ function register(opts = {}) {
   });
 
   ipcMain.handle("brain:import", async () => {
+    const gate = gates.check("brain:import");
+    if (!gate.allowed) return { ok: false, ...gate };
     try {
       const result = await dialog.showOpenDialog({
         title: "Import Doppel brain",
@@ -1264,9 +1223,15 @@ function register(opts = {}) {
 
   /* --- user profile ----------------------------------------------------- */
 
-  ipcMain.handle("profile:get", () => profile.getProfile());
+  ipcMain.handle("profile:get", () => {
+    const gate = gates.check("profile:get");
+    if (!gate.allowed) return null;
+    return profile.getProfile();
+  });
 
   ipcMain.handle("profile:generate", async () => {
+    const gate = gates.check("profile:generate");
+    if (!gate.allowed) return { ok: false, ...gate };
     try {
       return await profile.generateProfile();
     } catch (err) {
@@ -1568,6 +1533,8 @@ function register(opts = {}) {
   ipcMain.handle("workflow:list", () => readWorkflows());
 
   handle("workflow:create", (title, steps, onFailure) => {
+    const gate = gates.check("workflow:create");
+    if (!gate.allowed) return { ok: false, ...gate };
     return createWorkflow(title, steps, onFailure);
   });
 
@@ -1607,6 +1574,8 @@ function register(opts = {}) {
   handle("guide:clearPointer", () => guide.clearPointer());
 
   ipcMain.handle("guide:startWalkthrough", async (_e, goal) => {
+    const gate = gates.check("guide:walkthrough");
+    if (!gate.allowed) return { ok: false, ...gate };
     try { return await guide.startWalkthrough(goal); }
     catch (err) { return { ok: false, detail: err.message }; }
   });
@@ -1629,6 +1598,99 @@ function register(opts = {}) {
   });
 
   ipcMain.handle("guide:getState", () => guide.getState());
+
+  /* --- whisper hallucination check — Jev scores transcription quality ---- */
+
+  ipcMain.handle("ai:isHallucination", async (_e, text) => {
+    const confidence = await jev.score(
+      { transcription: text },
+      "This transcription contains real, coherent human speech — not silence artifacts, music notation, ASR hallucinations, repeated filler, or auto-generated subtitles",
+      0.7,
+    );
+    return confidence < 0.3;
+  });
+
+  /* --- voice command router — Jev classifies voice commands fast --------- */
+
+  ipcMain.handle("ai:routeVoice", async (_e, text) => {
+    return jev.decide(
+      { userMessage: text },
+      "What is the user trying to do?",
+      {
+        show_tasks:       "View inbox, tasks, agents, queue, or what agents are doing",
+        approve_tasks:    "Approve, accept, greenlight, or start pending tasks",
+        reject_tasks:     "Reject, cancel, deny, stop, or kill tasks",
+        retry_tasks:      "Retry, redo, or rerun failed tasks",
+        clear_tasks:      "Clear, clean up, remove, or flush completed/old tasks",
+        show_workflows:   "View, list, or check workflows or pipelines",
+        abort_workflow:    "Abort, cancel, or stop a running workflow or pipeline",
+        create_workflow:   "Create, make, set up, or start a new workflow or pipeline with steps",
+        other:            "Something else entirely — a question, a bot task, conversation, or anything not listed above",
+      },
+      "other",
+    );
+  });
+
+  /* --- intent classifier — lets the whisper understand natural speech ---- */
+
+  ipcMain.handle("ai:classifyIntent", async (_e, text) => {
+    /* Step 1: Jev fast decision — task or question? */
+    const intent = await jev.decide(
+      { userMessage: text },
+      "What does the user want?",
+      {
+        task:     "The user wants something DONE — create a file, write a document, send an email, organize files, open an app. Produces a deliverable or changes something.",
+        question: "The user wants to KNOW something — ask a question, get an explanation, recall a memory, understand what's on screen, have a conversation.",
+      },
+      "question",
+    );
+
+    if (intent !== "task") return { intent: "question", goal: null };
+
+    /* Step 2: only for tasks — extract the clean goal via LLM */
+    if (!claude.configured()) return { intent: "task", goal: text };
+    try {
+      const result = await claude.ask({
+        system: "Extract the clean task goal from the user's message. Strip filler words, self-corrections, and politeness. Keep the substance. Return JSON with a single \"goal\" string field.",
+        messages: [{ role: "user", content: text }],
+        schema: {
+          type: "object",
+          properties: { goal: { type: "string" } },
+          required: ["goal"],
+        },
+        effort: "low",
+        maxTokens: 100,
+        thinking: false,
+      });
+      return { intent: "task", goal: result.ok ? (result.value.goal || text) : text };
+    } catch {
+      return { intent: "task", goal: text };
+    }
+  });
+
+  /* --- computer bots (Jev-powered) -------------------------------------- */
+
+  computer.setEmitter((bot) => {
+    broadcast("doppel:bot-update", bot);
+    try { if (opts.onBotUpdate) opts.onBotUpdate(bot); } catch {}
+  });
+
+  ipcMain.handle("computer:create", async (_e, goal) => {
+    const gate = gates.check("computer:create");
+    if (!gate.allowed) return { ok: false, error: "upgrade_required", ...gate };
+    return computer.createBot(goal);
+  });
+
+  ipcMain.handle("computer:respond", (_e, id, answer) => computer.respondToBot(id, answer));
+  ipcMain.handle("computer:stop", (_e, id) => computer.stopBot(id));
+  ipcMain.handle("computer:list", () => computer.listBots());
+  ipcMain.handle("computer:status", (_e, id) => computer.botStatus(id));
+  ipcMain.handle("computer:clear", (_e, id) => computer.clearBot(id));
+
+  ipcMain.handle("computer:configured", () => ({
+    configured: computer.configured(),
+    geminiKey: claude.configured(),
+  }));
 
   /* --- biometric / security --------------------------------------------- */
 
@@ -1723,7 +1785,20 @@ function register(opts = {}) {
   });
 
   /* --- misc ------------------------------------------------------------- */
-  ipcMain.handle("windows:list", () => win32.listWindows());
+  ipcMain.handle("windows:list", async () => {
+    if (process.platform === "darwin") {
+      try {
+        const { execSync } = require("node:child_process");
+        const raw = execSync(
+          'osascript -e \'tell application "System Events" to get {name, title of windows} of every process whose visible is true\'',
+          { encoding: "utf8", timeout: 3000 },
+        );
+        /* Parse osascript list output into structured data */
+        return raw.trim().split(", ").filter(Boolean).map((w) => ({ app: w, title: "" }));
+      } catch { return []; }
+    }
+    return win32.listWindows();
+  });
 
   handle("app:reset", () => {
     db.reset();

@@ -25,12 +25,14 @@ const EFFORT = {
   act: "xhigh",
 };
 
-/** Map effort levels to Gemini thinking budgets (token count). */
+/** Map effort levels to Gemini thinking budgets (token count).
+ *  Kept lean — most calls use schema output where thinking adds latency
+ *  for no quality gain. Only plan/act need real deliberation. */
 const THINKING_BUDGET = {
-  low: 256,
-  medium: 1024,
-  high: 4096,
-  xhigh: 8192,
+  low: 128,
+  medium: 512,
+  high: 2048,
+  xhigh: 4096,
 };
 
 let client = null;

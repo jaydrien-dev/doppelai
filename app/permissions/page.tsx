@@ -109,9 +109,6 @@ export default function PermissionsPage() {
               {whisper.enabled && (
                 <p className="mt-3" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
                   Hotkey: <span style={{ fontWeight: 600, color: "var(--ink)" }}>{whisper.hotkey}</span>
-                  {whisper.autoDismiss > 0 && (
-                    <span> · auto-dismiss after {whisper.autoDismiss}s</span>
-                  )}
                 </p>
               )}
             </div>
@@ -129,14 +126,34 @@ export default function PermissionsPage() {
         </div>
 
         {whisper.enabled && (
-          <div className="pressed mt-5" style={{ padding: 28 }}>
-            <p style={{ fontWeight: 600 }}>{voice.whisper.openaiTitle}</p>
-            <p className="agent-voice mt-2" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
-              {voice.whisper.openaiBody}
-            </p>
-            <OpenAIKeyInput />
-          </div>
+          <>
+            <div className="pressed mt-5" style={{ padding: 28 }}>
+              <p style={{ fontWeight: 600 }}>{voice.whisper.openaiTitle}</p>
+              <p className="agent-voice mt-2" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+                {voice.whisper.openaiBody}
+              </p>
+              <OpenAIKeyInput />
+            </div>
+
+            <div className="pressed mt-5" style={{ padding: 28 }}>
+              <WhisperSettings />
+            </div>
+          </>
         )}
+      </section>
+
+      {/* ---------------------------------------------------- Jev / TypeSafe */}
+      <section className="mb-14">
+        <div className="raised" style={{ padding: 28 }}>
+          <p style={{ fontSize: "var(--text-title)", fontWeight: 600 }}>
+            Doppel Computer
+          </p>
+          <p className="agent-voice mt-2" style={{ color: "var(--slate)" }}>
+            Background bots powered by Jev (TypeSafe). Give Doppel a goal and it drives your
+            desktop — clicking, typing, scrolling — until the job is done.
+          </p>
+          <TypeSafeKeyInput />
+        </div>
       </section>
 
       {/* -------------------------------------------------------- nudges */}
@@ -442,10 +459,36 @@ function BiometricPanel() {
           )}
         </div>
         {security.biometric && (
-          <div className="mt-5 flex flex-wrap items-center gap-4">
-            <Button variant="ghost" size="sm" onClick={() => doppel.securityLock()}>
-              {voice.security.lockNow}
-            </Button>
+          <div className="mt-5">
+            <div className="flex flex-wrap items-center gap-4">
+              <Button variant="ghost" size="sm" onClick={() => doppel.securityLock()}>
+                {voice.security.lockNow}
+              </Button>
+            </div>
+            <div className="mt-5 flex flex-wrap items-center gap-4">
+              <label style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+                Auto-lock after inactivity
+              </label>
+              <select
+                value={security.lockTimeout}
+                onChange={(e) => doppel.securitySetLockTimeout(Number(e.target.value))}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: "var(--radius-control)",
+                  background: "var(--bg-base)",
+                  boxShadow: "var(--elev-pressed-sm)",
+                  fontSize: "var(--text-sm)",
+                  color: "var(--ink)",
+                  border: "none",
+                }}
+              >
+                <option value={0}>Never</option>
+                <option value={5}>5 minutes</option>
+                <option value={15}>15 minutes</option>
+                <option value={30}>30 minutes</option>
+                <option value={60}>1 hour</option>
+              </select>
+            </div>
           </div>
         )}
       </div>
@@ -509,5 +552,129 @@ function DisplayPicker() {
         })}
       </div>
     </div>
+  );
+}
+
+function TypeSafeKeyInput() {
+  const ai = useDoppel((s) => s.ai);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const result = await doppel.setTypeSafeKey(draft);
+    setBusy(false);
+    if (result?.ok) setDraft("");
+    else setError(result?.detail ?? "That didn't work.");
+  };
+
+  if (ai.typesafeConfigured) {
+    return (
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+        <p className="agent-voice" style={{ color: "var(--primary)" }}>
+          TypeSafe key set ({ai.typesafeHint})
+        </p>
+        <Button variant="ghost" size="sm" onClick={() => doppel.clearTypeSafeKey()}>
+          Remove key
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mt-5 flex items-center gap-3">
+        <input
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && draft && save()}
+          placeholder="ts_..."
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1"
+          style={{
+            padding: "12px 16px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--bg-base)",
+            boxShadow: "var(--elev-pressed-sm)",
+            fontSize: "var(--text-sm)",
+            color: "var(--ink)",
+            fontFamily: "var(--font-mono, monospace)",
+          }}
+        />
+        <Button variant="primary" onClick={save} disabled={!draft || busy}>
+          {busy ? "Saving" : "Save key"}
+        </Button>
+      </div>
+      <p className="agent-voice mt-3" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+        {error ?? "Get your API key from console.typesafe.ai"}
+      </p>
+    </>
+  );
+}
+
+function WhisperSettings() {
+  const whisper = useDoppel((s) => s.whisper);
+
+  const sliderStyle: React.CSSProperties = {
+    width: "100%",
+    accentColor: "var(--primary)",
+    cursor: "pointer",
+  };
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-5">
+        <div>
+          <p style={{ fontWeight: 600 }}>Auto-dismiss</p>
+          <p className="agent-voice mt-1" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+            Close the whisper panel after silence. {whisper.autoDismiss === 0 ? "Disabled." : `${whisper.autoDismiss}s.`}
+          </p>
+        </div>
+        <select
+          value={whisper.autoDismiss}
+          onChange={(e) => doppel.whisperSetAutoDismiss(Number(e.target.value))}
+          style={{
+            padding: "8px 12px",
+            borderRadius: "var(--radius-control)",
+            background: "var(--bg-base)",
+            boxShadow: "var(--elev-pressed-sm)",
+            fontSize: "var(--text-sm)",
+            color: "var(--ink)",
+            border: "none",
+          }}
+        >
+          <option value={0}>Never</option>
+          <option value={3}>3 seconds</option>
+          <option value={5}>5 seconds</option>
+          <option value={10}>10 seconds</option>
+          <option value={15}>15 seconds</option>
+        </select>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between">
+          <p style={{ fontWeight: 600 }}>Mic sensitivity</p>
+          <span style={{ fontSize: "var(--text-sm)", color: "var(--slate)", fontVariantNumeric: "tabular-nums" }}>
+            {Math.round(whisper.micSensitivity * 100)}%
+          </span>
+        </div>
+        <p className="agent-voice mt-1 mb-3" style={{ fontSize: "var(--text-sm)", color: "var(--slate)" }}>
+          How loud you need to speak before Doppel starts listening.
+        </p>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={whisper.micSensitivity}
+          onChange={(e) => doppel.whisperSetMicSensitivity(Number(e.target.value))}
+          style={sliderStyle}
+        />
+      </div>
+    </>
   );
 }

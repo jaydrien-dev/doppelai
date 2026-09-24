@@ -146,7 +146,7 @@ async function startWalkthrough(goal) {
 
   /* Ask Claude to plan the walkthrough based on what's on screen. */
   const plan = await claude.ask({
-    system: `You are a step-by-step software tutor. Given a screenshot and a goal, break the goal into concrete UI steps the user needs to take. Each step should name the exact UI element to interact with (button text, menu name, input field label, etc.) and the action (click, type, scroll, etc.). Maximum 15 steps. Be specific — reference exact text visible on screen.`,
+    system: `Break the goal into concrete UI steps. Each step: name the exact UI element (button text, menu name, label) and action (click, type, scroll). Max 15 steps. Reference exact text visible on screen.`,
     messages: [{
       role: "user",
       content: [
@@ -157,7 +157,7 @@ async function startWalkthrough(goal) {
     schema: WALKTHROUGH_SCHEMA,
     thinking: false,
     fast: false, /* use Sonnet for better accuracy */
-    maxTokens: 2000,
+    maxTokens: 1200,
   });
 
   if (!plan.ok || !plan.value?.steps?.length) {
